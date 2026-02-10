@@ -1,0 +1,161 @@
+
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid()) 
+  email     String   @unique
+  title     Title?   
+  firstName String   @map("first_name")
+  lastName  String   @map("last_name")
+  contactNo String?  @map("contact_no")
+  role      Role     @default(CONSULTANT)
+  team      Teams?
+  password  String   
+
+  pendingBookings PendingBooking[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+enum Role {
+  ADMIN
+  CONSULTANT
+  MANAGEMENT
+  SUPER_MANAGER
+  SUPER_ADMIN
+}
+enum Teams {
+  PH
+  TOURS
+  MARKETING 
+  QC       
+  IT      
+}
+enum Title {
+  MR
+  MRS
+  MS
+  DR
+  PROF
+}
+
+model PendingBooking {
+  id                Int             @id @default(autoincrement())
+  refNo             String          @map("ref_no")
+  paxName           String          @map("pax_name")
+  agentName         String          @map("agent_name")
+  teamName          Teams?          @map("team_name")
+  pnr               String          @map("pnr")
+  airline           String          @map("airline")
+  fromTo            String          @map("from_to")
+  bookingType       BookingType     @map("booking_type")
+  bookingStatus     BookingStatus?  @map("booking_status")
+  pcDate            DateTime        @map("pc_date")
+  issuedDate        DateTime?       @map("issued_date")
+  paymentMethod     PaymentMethod   @map("payment_method")
+  lastPaymentDate   DateTime?       @map("last_payment_date")
+  travelDate        DateTime?       @map("travel_date")
+  revenue           Float?          @map("revenue")
+  prodCost          Float?          @map("prod_cost")
+  transFee          Float?          @map("trans_fee")
+  surcharge         Float?          @map("surcharge")
+  initialPayments   InitialPayment[]
+  balance           Float?          @map("balance")
+  profit            Float?          @map("profit")
+  invoiced          String?         @map("invoice")
+  description       String?         @map("description")
+  status            PendingStatus   @default(PENDING) @map("status")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+  instalments       PendingInstalment[]
+  passengers        PendingPassenger[]
+  numPax            Int             @map("num_pax")
+
+  createdById       String          @map("created_by_id")
+  createdBy         User            @relation(fields: [createdById], references: [id])
+
+  @@map("pending_bookings")
+}
+enum BookingType {
+  FRESH
+  DATE_CHANGE
+  CANCELLATION
+}
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  VOID
+}
+enum PaymentMethod {
+  FULL
+  INTERNAL
+}
+enum PendingStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+model PendingInitialPayment {
+  id                Int      @id @default(autoincrement())
+  amount            Float
+  transactionMethod String   @map("transaction_method")
+  paymentDate       DateTime @map("payment_date")
+  
+  pendingBookingId  Int?     @map("pending_booking_id")
+  pendingBooking    PendingBooking? @relation(fields: [pendingBookingId], references: [id], onDelete: Cascade)
+
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("pending_initial_payments") 
+}
+
+model PendingInstalment {
+  id                Int            @id @default(autoincrement())
+  pendingBookingId  Int
+  dueDate           DateTime       @map("due_date")
+  amount            Float
+  status            String         @default("PENDING")
+  pendingBooking    PendingBooking @relation(fields: [pendingBookingId], references: [id], onDelete: Cascade)
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
+  @@map("pending_instalments")
+}
+model PendingPassenger {
+  id                Int               @id @default(autoincrement())
+  pendingBookingId  Int
+  title             Title
+  firstName         String            @map("first_name")
+  middleName        String?           @map("middle_name")
+  lastName          String            @map("last_name")
+  gender            Gender
+  email             String?
+  contactNo         String?           @map("contact_no")
+  nationality       String?           @map("nationality")
+  birthday          DateTime?         @map("birthday")
+  category          PassengerCategory
+  pendingBooking    PendingBooking     @relation(fields: [pendingBookingId], references: [id], onDelete: Cascade)
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+  @@map("pending_passengers")
+}
+enum Gender {
+  MALE
+  FEMALE
+}
+enum PassengerCategory {
+  ADULT
+  CHILD
+  INFANT
+}
