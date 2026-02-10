@@ -1,91 +1,95 @@
 const prisma = require('../config/db');
 
 exports.createBookingTransaction = async (data, userId) => {
-  // 1. Backend Calculations (Trust No One)
-  // Ensure we parse strings to floats to avoid concatenation errors
+
+  const supplierItems = data.supplierCosts || [];
+  const calculatedProdCost = supplierItems.reduce((sum, item) => sum + parseFloat(item.amount || 0), 0);
+
   const revenue = parseFloat(data.revenue || 0);
   const prodCost = parseFloat(data.prodCost || 0);
   const transFee = parseFloat(data.transFee || 0);
   const surcharge = parseFloat(data.surcharge || 0);
 
-  // Profit Formula: Revenue + Surcharge - (Cost + Fees)
-  // *Adjust this formula if your business logic differs*
-  const profit = (revenue + surcharge) - (prodCost + transFee);
+  // Profit Formula (As agreed: Revenue - All Costs)
+  const profit = revenue - (prodCost + surcharge + transFee);
 
-  // Calculate Total Initial Payment
-  const totalPaid = data.initialPayments.reduce((sum, pay) => sum + parseFloat(pay.amount || 0), 0);
+  // Calculate Total Paid so far (Initial Payments)
+  const totalInitialPay = data.initialPayments.reduce((sum, pay) => sum + parseFloat(pay.amount || 0), 0);
   
-  // Balance Formula
-  const balance = (revenue + surcharge) - totalPaid;
+  // Calculate Balance
+  // For FULL: Balance = Revenue - Paid (Should be 0 ideally, but we track it)
+  // For INTERNAL: Balance = Revenue - Paid (This balance must be covered by Instalments)
+  let balance = revenue - totalInitialPay;
 
-  // 2. The Transaction
-  // We create the Booking, Passengers, and Payments in one atomic operation.
-  return await prisma.$transaction(async (tx) => {
+  // --- 2. VALIDATION (The "Strict" Rule) ---
+  if (data.paymentMethod === 'INTERNAL') {
+    const totalInstalments = data.instalments.reduce((sum, inst) => sum + parseFloat(inst.amount || 0), 0);
     
-    const newBooking = await tx.pendingBooking.create({
+    // allow a tiny difference for floating point math (e.g. 0.01)
+    if (Math.abs(balance - totalInstalments) > 0.05) {
+      throw new Error(`Strict Math Error: Outstanding Balance is ${balance.toFixed(2)}, but Instalments total ${totalInstalments.toFixed(2)}. They must match.`);
+    }
+  }
+
+  return await prisma.$transaction(async (tx) => {
+    return await tx.pendingBooking.create({
       data: {
-        // Basic Info
-        refNo: data.refNo, // You might want to auto-generate this too!
-        paxName: data.paxName,
-        agentName: data.agentName,
-        teamName: data.teamName, // Enum
-        numPax: parseInt(data.numPax),
+        // ... (All your standard string fields remain the same) ...
+        refNo: data.refNo, paxName: data.paxName, agentName: data.agentName, teamName: data.teamName,
+        numPax: parseInt(data.numPax), pnr: data.pnr, airline: data.airline, fromTo: data.fromTo,
+        bookingType: data.bookingType, bookingStatus: 'PENDING', description: data.description,
+        pcDate: new Date(data.pcDate), travelDate: data.travelDate ? new Date(data.travelDate) : null,
+        createdById: userId,
         
-        // Flight Info
-        pnr: data.pnr,
-        airline: data.airline,
-        fromTo: data.fromTo,
-        bookingType: data.bookingType,
-        bookingStatus: 'PENDING',
-        
-        // Dates
-        pcDate: new Date(data.pcDate),
-        travelDate: data.travelDate ? new Date(data.travelDate) : null,
-        
-        // Financials (Calculated & Raw)
+        // FINANCIALS
         paymentMethod: data.paymentMethod,
         revenue: revenue,
-        prodCost: prodCost,
+        prodCost: calculatedProdCost, // <--- SAVING THE AUTO-CALCULATED TOTAL
         transFee: transFee,
         surcharge: surcharge,
-        profit: profit,   // <--- Auto-calculated
-        balance: balance, // <--- Auto-calculated
-        
-        createdById: userId, // Linked to the logged-in user
+        profit: profit,
+        balance: balance,
 
-        // Relations: Create children records simultaneously
+        // RELATIONS
         passengers: {
           create: data.passengers.map(p => ({
-            title: p.title,
-            firstName: p.firstName,
-            lastName: p.lastName,
-            gender: p.gender,
-            category: p.category // ADULT, CHILD, etc.
+            title: p.title, firstName: p.firstName, lastName: p.lastName, gender: p.gender,
+            category: p.category, birthday: p.birthday ? new Date(p.birthday) : null,
+            email: p.email, contactNo: p.contactNo
           }))
         },
-        
-        initialPayments: {
+        pendingInitialPayments: {
           create: data.initialPayments.map(p => ({
-            amount: parseFloat(p.amount),
-            transactionMethod: p.transactionMethod,
-            paymentDate: new Date(p.paymentDate)
+            amount: parseFloat(p.amount), transactionMethod: p.transactionMethod, paymentDate: new Date(p.paymentDate)
+          }))
+        },
+        instalments: {
+          create: data.paymentMethod === 'INTERNAL' ? data.instalments.map(i => ({
+            dueDate: new Date(i.dueDate), amount: parseFloat(i.amount), status: 'PENDING'
+          })) : []
+        },
+        
+        // NEW: Save the breakdown items
+        supplierCosts: {
+          create: supplierItems.map(item => ({
+             supplier: item.supplier,
+             category: item.category,
+             amount: parseFloat(item.amount),
+             description: item.description || ''
           }))
         }
       },
-      include: {
-        passengers: true,
-        initialPayments: true
+      include: { 
+        supplierCosts: true // Return the costs in the response
       }
     });
-
-    return newBooking;
   });
 };
 
 exports.getAllBookings = async () => {
   return await prisma.pendingBooking.findMany({
     orderBy: { createdAt: 'desc' },
-    include: { createdBy: true } // Fetch who created it
+    include: { createdBy: true, instalments: true } 
   });
 };
 

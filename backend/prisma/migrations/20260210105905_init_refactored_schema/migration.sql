@@ -1,4 +1,13 @@
 -- CreateEnum
+CREATE TYPE "Role" AS ENUM ('ADMIN', 'CONSULTANT', 'MANAGEMENT', 'SUPER_MANAGER', 'SUPER_ADMIN');
+
+-- CreateEnum
+CREATE TYPE "Teams" AS ENUM ('PH', 'TOURS', 'MARKETING', 'QC', 'IT');
+
+-- CreateEnum
+CREATE TYPE "Title" AS ENUM ('MR', 'MRS', 'MS', 'DR', 'PROF');
+
+-- CreateEnum
 CREATE TYPE "BookingType" AS ENUM ('FRESH', 'DATE_CHANGE', 'CANCELLATION');
 
 -- CreateEnum
@@ -15,6 +24,23 @@ CREATE TYPE "Gender" AS ENUM ('MALE', 'FEMALE');
 
 -- CreateEnum
 CREATE TYPE "PassengerCategory" AS ENUM ('ADULT', 'CHILD', 'INFANT');
+
+-- CreateTable
+CREATE TABLE "users" (
+    "id" TEXT NOT NULL,
+    "email" TEXT NOT NULL,
+    "title" "Title",
+    "first_name" TEXT NOT NULL,
+    "last_name" TEXT NOT NULL,
+    "contact_no" TEXT,
+    "role" "Role" NOT NULL DEFAULT 'CONSULTANT',
+    "team" "Teams",
+    "password" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "users_pkey" PRIMARY KEY ("id")
+);
 
 -- CreateTable
 CREATE TABLE "pending_bookings" (
@@ -51,16 +77,16 @@ CREATE TABLE "pending_bookings" (
 );
 
 -- CreateTable
-CREATE TABLE "initial_payments" (
+CREATE TABLE "pending_initial_payments" (
     "id" SERIAL NOT NULL,
     "amount" DOUBLE PRECISION NOT NULL,
-    "transactionMethod" TEXT NOT NULL,
-    "paymentDate" TIMESTAMP(3) NOT NULL,
-    "pendingBookingId" INTEGER,
+    "transaction_method" TEXT NOT NULL,
+    "payment_date" TIMESTAMP(3) NOT NULL,
+    "pending_booking_id" INTEGER,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "initial_payments_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "pending_initial_payments_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -96,11 +122,14 @@ CREATE TABLE "pending_passengers" (
     CONSTRAINT "pending_passengers_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateIndex
+CREATE UNIQUE INDEX "users_email_key" ON "users"("email");
+
 -- AddForeignKey
 ALTER TABLE "pending_bookings" ADD CONSTRAINT "pending_bookings_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "initial_payments" ADD CONSTRAINT "initial_payments_pendingBookingId_fkey" FOREIGN KEY ("pendingBookingId") REFERENCES "pending_bookings"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "pending_initial_payments" ADD CONSTRAINT "pending_initial_payments_pending_booking_id_fkey" FOREIGN KEY ("pending_booking_id") REFERENCES "pending_bookings"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "pending_instalments" ADD CONSTRAINT "pending_instalments_pendingBookingId_fkey" FOREIGN KEY ("pendingBookingId") REFERENCES "pending_bookings"("id") ON DELETE CASCADE ON UPDATE CASCADE;
