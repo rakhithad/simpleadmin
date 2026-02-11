@@ -494,9 +494,93 @@ export default function BookingManager() {
                     <td className="px-6 py-4 text-right font-mono">{b.revenue?.toFixed(2)}</td>
                     <td className="px-6 py-4 text-right font-mono text-slate-400">{b.prodCost?.toFixed(2)}</td>
                     <td className="px-6 py-4 text-right font-mono font-bold text-green-600">{b.profit?.toFixed(2)}</td>
-                    <td className="px-6 py-4 text-center">
-                      <button onClick={() => handleEdit(b)} className="font-medium text-blue-600 hover:underline">Edit</button>
-                    </td>
+                    <td className="px-6 py-4 text-center flex justify-center gap-2">
+  {/* Edit Button */}
+  <button 
+    onClick={() => handleEdit(b)} 
+    className="text-blue-600 hover:bg-blue-50 px-2 py-1 rounded text-xs font-bold transition"
+  >
+    EDIT
+  </button>
+  
+  {/* Approve Button */}
+  <button 
+    onClick={async () => {
+      if(!window.confirm("Approve this booking? It will move to live records.")) return;
+      try {
+        const token = localStorage.getItem('token');
+        await axios.post(`http://localhost:5000/api/bookings/${b.id}/approve`, {}, {
+           headers: { Authorization: `Bearer ${token}` }
+        });
+        alert("Booking Approved!");
+        fetchBookings(); // Refresh list to see it vanish
+      } catch(alert) { alert("Error approving"); }
+    }}
+    className="text-green-600 hover:bg-green-50 px-2 py-1 rounded text-xs font-bold transition"
+  >
+    APPROVE
+  </button>
+
+  {/* Reject Button */}
+  <button 
+    onClick={async () => {
+      if(!window.confirm("Reject and Delete permanently?")) return;
+      try {
+        const token = localStorage.getItem('token');
+        await axios.delete(`http://localhost:5000/api/bookings/${b.id}/reject`, {
+           headers: { Authorization: `Bearer ${token}` }
+        });
+        fetchBookings(); // Refresh list
+      } catch(alert) { alert("Error rejecting"); }
+    }}
+    className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs font-bold transition"
+  >
+    REJECT
+  </button>
+</td><td className="px-6 py-4 text-center flex justify-center gap-2">
+  {/* Edit Button */}
+  <button 
+    onClick={() => handleEdit(b)} 
+    className="text-blue-600 hover:bg-blue-50 px-2 py-1 rounded text-xs font-bold transition"
+  >
+    EDIT
+  </button>
+  
+  {/* Approve Button */}
+  <button 
+    onClick={async () => {
+      if(!window.confirm("Approve this booking? It will move to live records.")) return;
+      try {
+        const token = localStorage.getItem('token');
+        await axios.post(`http://localhost:5000/api/bookings/${b.id}/approve`, {}, {
+           headers: { Authorization: `Bearer ${token}` }
+        });
+        alert("Booking Approved!");
+        fetchBookings(); // Refresh list to see it vanish
+      } catch(alert) { alert("Error approving"); }
+    }}
+    className="text-green-600 hover:bg-green-50 px-2 py-1 rounded text-xs font-bold transition"
+  >
+    APPROVE
+  </button>
+
+  {/* Reject Button */}
+  <button 
+    onClick={async () => {
+      if(!window.confirm("Reject and Delete permanently?")) return;
+      try {
+        const token = localStorage.getItem('token');
+        await axios.delete(`http://localhost:5000/api/bookings/${b.id}/reject`, {
+           headers: { Authorization: `Bearer ${token}` }
+        });
+        fetchBookings(); // Refresh list
+      } catch(alert) { alert("Error rejecting"); }
+    }}
+    className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs font-bold transition"
+  >
+    REJECT
+  </button>
+</td>
                   </tr>
                 ))}
               </tbody>

@@ -21,6 +21,7 @@ export default function Navbar() {
         <div className="hidden md:flex gap-6 text-sm font-medium">
           <button onClick={() => navigate('/dashboard')} className="opacity-80 hover:opacity-100">Dashboard</button>
           <button onClick={() => navigate('/bookings')} className="opacity-80 hover:opacity-100">Bookings</button>
+          <button onClick={() => navigate('/approved-bookings')} className="opacity-80 hover:opacity-100">Approved</button>
         </div>
       </div>
 

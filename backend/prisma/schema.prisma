@@ -19,6 +19,7 @@ model User {
   password  String   
 
   pendingBookings PendingBooking[]
+  approvedBookings Booking[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -47,6 +48,7 @@ enum Title {
   DR
   PROF
 }
+
 
 model PendingBooking {
   id                Int             @id @default(autoincrement())
@@ -133,6 +135,7 @@ model PendingInstalment {
   updatedAt         DateTime       @updatedAt @map("updated_at")
   @@map("pending_instalments")
 }
+
 model PendingPassenger {
   id                Int               @id @default(autoincrement())
   pendingBookingId  Int
@@ -151,10 +154,12 @@ model PendingPassenger {
   updatedAt         DateTime          @updatedAt @map("updated_at")
   @@map("pending_passengers")
 }
+
 enum Gender {
   MALE
   FEMALE
 }
+
 enum PassengerCategory {
   ADULT
   CHILD
@@ -190,3 +195,132 @@ enum CostCategory {
   CRUISE
   OTHER
 }
+
+// Pending tables done
+
+
+model Booking {
+  id                Int             @id @default(autoincrement())
+  folderNo          String          @unique @map("folder_no") // <--- Q1: Unqiue String ID
+  
+  // Copied fields
+  refNo             String          @map("ref_no")
+  paxName           String          @map("pax_name")
+  agentName         String          @map("agent_name")
+  teamName          Teams?          @map("team_name")
+  numPax            Int             @map("num_pax")
+  pnr               String          @map("pnr")
+  airline           String          @map("airline")
+  fromTo            String          @map("from_to")
+  bookingType       BookingType     @map("booking_type")
+  bookingStatus     BookingStatus   @default(CONFIRMED) @map("booking_status")
+  
+  pcDate            DateTime        @map("pc_date")
+  travelDate        DateTime?       @map("travel_date")
+  
+  // Financials
+  paymentMethod     PaymentMethod   @map("payment_method")
+  revenue           Float?          @map("revenue")
+  prodCost          Float?          @map("prod_cost")
+  transFee          Float?          @map("trans_fee")
+  surcharge         Float?          @map("surcharge")
+  profit            Float?          @map("profit")
+  balance           Float?          @map("balance")
+  
+  description       String?         @map("description")
+  
+  // Meta
+  approvedById      String          @map("approved_by_id")
+  approvedBy        User            @relation(fields: [approvedById], references: [id])
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  initialPayments   InitialPayment[]
+  instalments       Instalment[]
+  passengers        Passenger[]
+  supplierCosts     SupplierCostItem[]
+
+  @@map("bookings")
+}
+
+model InitialPayment {
+  id                Int      @id @default(autoincrement())
+  amount            Float
+  transactionMethod String   @map("transaction_method")
+  paymentDate       DateTime @map("payment_date")
+  
+  bookingId         Int      @map("booking_id")
+  booking           Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  createdAt         DateTime @default(now()) @map("created_at")
+  @@map("initial_payments")
+}
+
+model Instalment {
+  id                Int            @id @default(autoincrement())
+  bookingId         Int            @map("booking_id")
+  booking           Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  dueDate           DateTime       @map("due_date")
+  
+  // Q2: Expected vs Received
+  amount            Float          @map("expected_amount") // What they SHOULD pay
+  paidAmount        Float          @default(0) @map("paid_amount") // What they ACTUALLY paid
+  
+  // Q2: Type
+  type              InstalmentType @default(INSTALMENT)
+  
+  status            String         @default("PENDING") // PENDING, PAID, PARTIAL
+  
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
+  @@map("instalments")
+}
+
+// Q2: New Enum
+enum InstalmentType {
+  INSTALMENT
+  SETTLEMENT
+}
+
+model Passenger {
+  id                Int               @id @default(autoincrement())
+  bookingId         Int               @map("booking_id")
+  booking           Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  title             Title
+  firstName         String            @map("first_name")
+  lastName          String            @map("last_name")
+  gender            Gender
+  category          PassengerCategory
+  
+  // Optional details
+  middleName        String?           @map("middle_name")
+  email             String?
+  contactNo         String?           @map("contact_no")
+  nationality       String?           @map("nationality")
+  birthday          DateTime?         @map("birthday")
+
+  @@map("passengers")
+}
+
+model SupplierCostItem {
+  id                Int           @id @default(autoincrement())
+  bookingId         Int           @map("booking_id")
+  booking           Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  amount            Float
+  supplier          Supplier
+  category          CostCategory
+  description       String?       @map("description")
+
+  @@map("supplier_costs")
+}
+
+
+
+
+
+
+

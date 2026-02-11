@@ -143,3 +143,14 @@ exports.updateBooking = async (id, data) => {
     include: { passengers: true }
   });
 };
+
+exports.getApprovedBookings = async () => {
+  return await prisma.booking.findMany({
+    orderBy: { createdAt: 'desc' },
+    include: {
+      passengers: true,
+      initialPayments: true,
+      instalments: true
+    }
+  });
+};

@@ -1,5 +1,6 @@
 const bookingService = require('../services/bookingService');
 
+
 exports.createBooking = async (req, res) => {
   try {
     // req.user comes from your Auth Middleware
@@ -31,5 +32,17 @@ exports.updateBooking = async (req, res) => {
     res.json({ success: true, data: updated, message: 'Booking updated' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Update failed', error: error.message });
+  }
+};
+
+exports.getApprovedBookings = async (req, res) => {
+  try {
+    const bookings = await bookingService.getApprovedBookings();
+
+    res.status(200).json({ success: true, data: bookings });
+
+  } catch (error) {
+    console.error("Fetch Approved Error:", error);
+    res.status(500).json({ success: false, message: 'Failed to fetch bookings' });
   }
 };
