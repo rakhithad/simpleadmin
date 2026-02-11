@@ -1,3 +1,4 @@
+const prisma = require('../config/db');
 const bookingService = require('../services/bookingService');
 
 
@@ -37,10 +38,18 @@ exports.updateBooking = async (req, res) => {
 
 exports.getApprovedBookings = async (req, res) => {
   try {
-    const bookings = await bookingService.getApprovedBookings();
-
+    const bookings = await prisma.booking.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        passengers: true,
+        initialPayments: true,
+        instalments: true,
+        supplierCosts: true, // <--- Now including costs
+        approvedBy: { select: { firstName: true, lastName: true } } // <--- Now including approver name
+      }
+    });
+    
     res.status(200).json({ success: true, data: bookings });
-
   } catch (error) {
     console.error("Fetch Approved Error:", error);
     res.status(500).json({ success: false, message: 'Failed to fetch bookings' });
