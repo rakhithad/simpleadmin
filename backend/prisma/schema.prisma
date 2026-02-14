@@ -234,6 +234,7 @@ model Booking {
   instalments       Instalment[]
   passengers        Passenger[]
   supplierCosts     SupplierCostItem[]
+  supplierPayments  SupplierPayment[]
 
   isSettled         Boolean      @default(false) @map("is_settled")
   settledAt         DateTime?    @map("settled_at")
@@ -308,11 +309,32 @@ model SupplierCostItem {
   booking           Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   
   amount            Float
+  paidAmount        Float         @default(0) @map("paid_amount")
+
   supplier          Supplier
   category          CostCategory
   description       String?       @map("description")
 
+  payments          SupplierPayment[]
+
   @@map("supplier_costs")
+}
+
+model SupplierPayment {
+  id                Int               @id @default(autoincrement())
+  amount            Float             // Amount sent to supplier
+  method            String            // BANK, CARD, CASH, CREDIT
+  date              DateTime          @default(now())
+  reference         String?           // E.g., Transfer Receipt No.
+  
+  bookingId         Int               @map("booking_id")
+  booking           Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  supplierCostId    Int               @map("supplier_cost_id")
+  supplierCost      SupplierCostItem  @relation(fields: [supplierCostId], references: [id], onDelete: Cascade)
+
+  createdAt         DateTime          @default(now()) @map("created_at")
+  @@map("supplier_payments")
 }
 
 model Transaction {

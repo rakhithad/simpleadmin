@@ -46,7 +46,8 @@ exports.getApprovedBookings = async (req, res) => {
         instalments: true,
         supplierCosts: true, 
         approvedBy: { select: { firstName: true, lastName: true } },
-        transactions: true
+        transactions: true,
+        supplierCosts: { include: { payments: true } }
 
       }
     });
@@ -122,5 +123,97 @@ exports.settleBooking = async (req, res) => {
     res.status(200).json({ success: true, message: 'Booking Settled & Closed' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to settle' });
+  }
+};
+
+exports.addSupplierPayment = async (req, res) => {
+  const { bookingId } = req.params;
+  const { amount, method, date, reference, supplierCostId } = req.body;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // 1. Create the outgoing payment record
+      await tx.supplierPayment.create({
+        data: {
+          amount: parseFloat(amount),
+          method,
+          date: new Date(date),
+          reference,
+          bookingId: parseInt(bookingId),
+          supplierCostId: parseInt(supplierCostId)
+        }
+      });
+
+      // 2. Update the paid amount on the specific Supplier Cost Item
+      await tx.supplierCostItem.update({
+        where: { id: parseInt(supplierCostId) },
+        data: {
+          paidAmount: { increment: parseFloat(amount) }
+        }
+      });
+    });
+
+    res.status(200).json({ success: true, message: 'Supplier Payment Recorded' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to record supplier payment' });
+  }
+};
+
+exports.updateLiveBooking = async (req, res) => {
+  const { id } = req.params;
+  const { revenue, transFee, surcharge, supplierCosts } = req.body;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      
+      // 1. Calculate the NEW Product Cost based on the updated supplier list
+      const newProdCost = supplierCosts.reduce((sum, c) => sum + parseFloat(c.amount || 0), 0);
+      
+      // 2. Calculate the NEW Profit
+      const newProfit = parseFloat(revenue) - (newProdCost + parseFloat(transFee || 0) + parseFloat(surcharge || 0));
+
+      // 3. Update the Main Booking Record
+      await tx.booking.update({
+        where: { id: parseInt(id) },
+        data: {
+          revenue: parseFloat(revenue),
+          transFee: parseFloat(transFee),
+          surcharge: parseFloat(surcharge),
+          prodCost: newProdCost,
+          profit: newProfit
+        }
+      });
+
+      // 4. Update existing suppliers and Create new ones
+      for (let cost of supplierCosts) {
+        if (cost.id) {
+          // It's an existing supplier, just update the details
+          await tx.supplierCostItem.update({
+            where: { id: parseInt(cost.id) },
+            data: {
+              supplier: cost.supplier,
+              category: cost.category,
+              amount: parseFloat(cost.amount)
+            }
+          });
+        } else {
+          // It's a brand new supplier added during the edit
+          await tx.supplierCostItem.create({
+            data: {
+              bookingId: parseInt(id),
+              supplier: cost.supplier,
+              category: cost.category,
+              amount: parseFloat(cost.amount)
+            }
+          });
+        }
+      }
+    });
+
+    res.status(200).json({ success: true, message: 'Live Booking Financials Updated' });
+  } catch (error) {
+    console.error("Live Update Error:", error);
+    res.status(500).json({ success: false, message: 'Failed to update live booking' });
   }
 };

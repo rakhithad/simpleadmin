@@ -16,4 +16,8 @@ router.delete('/:id/reject', authMiddleware, approvalController.reject);
 router.post('/:bookingId/transaction', authMiddleware, bookingController.addTransaction);
 router.post('/:bookingId/settle', authMiddleware, bookingController.settleBooking);
 
+router.post('/:bookingId/supplier-payment', authMiddleware, bookingController.addSupplierPayment);
+
+router.put('/approved/:id', authMiddleware, bookingController.updateLiveBooking);
+
 module.exports = router;
