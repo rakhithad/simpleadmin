@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react'; // <--- FIXED: Added React here
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import Navbar from '../components/Navbar';
+import PaymentTerminal from '../components/PaymentTerminal'; // <--- Ensure this is imported
 
 // --- UTILITIES ---
 const formatDate = (d) => d ? new Date(d).toISOString().split('T')[0] : '-';
@@ -19,11 +20,16 @@ const getPaymentStatus = (booking) => {
 };
 
 // --- SUB-COMPONENT: The "Drawer" that opens up ---
-const ExpandedDetails = ({ booking }) => {
+// FIXED: Added 'onUpdate' to the props below 👇
+const ExpandedDetails = ({ booking, onUpdate }) => {
+  // Calculate financial totals for the UI
   const initialTotal = booking.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
   const instalmentPaid = booking.instalments?.reduce((sum, i) => sum + (i.paidAmount || 0), 0) || 0;
   const totalPaid = initialTotal + instalmentPaid;
   const balance = (booking.revenue || 0) - totalPaid;
+
+  // Calculate total from the Breakdown list to check for discrepancies
+  const breakdownTotal = booking.supplierCosts?.reduce((sum, c) => sum + c.amount, 0) || 0;
 
   return (
     <div className="bg-slate-50 border-t border-b border-slate-200 p-6 shadow-inner animate-fade-in text-sm">
@@ -53,22 +59,49 @@ const ExpandedDetails = ({ booking }) => {
 
         {/* COLUMN 2: SUPPLIER COSTS */}
         <div>
-          <h4 className="font-bold text-slate-700 uppercase text-xs border-b border-slate-300 pb-1">Supplier Breakdown</h4>
-          <div className="bg-white rounded border border-slate-200 overflow-hidden mt-2 shadow-sm">
-            {booking.supplierCosts.map((c, i) => (
-              <div key={i} className="flex justify-between px-3 py-2 border-b border-slate-100 last:border-0 text-slate-600">
-                <div>
-                  <span className="font-bold text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded mr-2">{c.supplier}</span>
-                  <span className="text-xs">{c.category}</span>
-                </div>
-                <div className="font-mono text-xs">{formatMoney(c.amount)}</div>
-              </div>
-            ))}
-            <div className="flex justify-between px-3 py-2 bg-slate-100 font-bold text-slate-700 border-t border-slate-200">
-              <span>Total Cost</span>
-              <span>{formatMoney(booking.prodCost)}</span>
-            </div>
+          <div className="flex justify-between items-end border-b border-slate-300 pb-1">
+            <h4 className="font-bold text-slate-700 uppercase text-xs">Supplier Breakdown</h4>
+            <span className="text-[10px] text-slate-400">Total: {formatMoney(booking.prodCost)}</span>
           </div>
+          
+          {(!booking.supplierCosts || booking.supplierCosts.length === 0) ? (
+            <div className="bg-yellow-50 rounded border border-yellow-200 p-4 text-center mt-2">
+              <p className="text-xs text-yellow-700 italic">No breakdown items found.</p>
+              <p className="text-[10px] text-yellow-600 mt-1">This booking might have been created before the update.</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded border border-slate-200 overflow-hidden mt-2 shadow-sm">
+              {/* Header Row */}
+              <div className="grid grid-cols-3 bg-slate-100 px-3 py-1.5 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase">
+                <span>Supplier</span>
+                <span>Category</span>
+                <span className="text-right">Cost</span>
+              </div>
+              
+              {/* Items */}
+              {booking.supplierCosts.map((c, i) => (
+                <div key={i} className="grid grid-cols-3 px-3 py-2 border-b border-slate-100 last:border-0 text-slate-600 items-center">
+                  <div className="font-bold text-xs text-blue-700">{c.supplier}</div>
+                  <div>
+                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">
+                      {c.category}
+                    </span>
+                  </div>
+                  <div className="text-right font-mono text-xs">{formatMoney(c.amount)}</div>
+                  {/* Optional Description Row */}
+                  {c.description && <div className="col-span-3 text-[10px] text-slate-400 italic mt-1">{c.description}</div>}
+                </div>
+              ))}
+              
+              {/* Totals Check */}
+              <div className="flex justify-between px-3 py-2 bg-slate-50 font-bold text-slate-700 border-t border-slate-200 text-xs">
+                <span>Calculated Total</span>
+                <span className={breakdownTotal !== booking.prodCost ? 'text-red-600' : 'text-slate-700'}>
+                  {formatMoney(breakdownTotal)}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* COLUMN 3: FINANCIALS */}
@@ -76,7 +109,11 @@ const ExpandedDetails = ({ booking }) => {
           <h4 className="font-bold text-slate-700 uppercase text-xs border-b border-slate-300 pb-1">Financial Summary</h4>
           <div className="space-y-2 mt-2 bg-white p-3 rounded border border-slate-200 shadow-sm">
             <div className="flex justify-between text-slate-500"><span>Revenue:</span> <span className="text-slate-800 font-bold">{formatMoney(booking.revenue)}</span></div>
-            <div className="flex justify-between text-slate-500"><span>Net Profit:</span> <span className="text-green-600 font-bold">{formatMoney(booking.profit)}</span></div>
+            <div className="flex justify-between text-slate-500"><span>Product Cost:</span> <span className="text-red-400 font-medium">-{formatMoney(booking.prodCost)}</span></div>
+            <div className="flex justify-between text-slate-500 text-xs pl-2"><span>(Trans Fee + Surcharge):</span> <span className="text-red-300">-{formatMoney((booking.transFee || 0) + (booking.surcharge || 0))}</span></div>
+            <div className="border-t border-slate-100 my-1"></div>
+            <div className="flex justify-between text-slate-700"><span>Net Profit:</span> <span className="text-green-600 font-bold text-lg">{formatMoney(booking.profit)}</span></div>
+            
             <div className="border-t border-dashed my-2"></div>
             <div className="flex justify-between text-slate-500"><span>Total Paid:</span> <span className="text-blue-600 font-bold">{formatMoney(totalPaid)}</span></div>
             
@@ -90,9 +127,9 @@ const ExpandedDetails = ({ booking }) => {
           {booking.instalments.length > 0 && (
             <div className="mt-4">
               <h4 className="font-bold text-slate-400 uppercase text-[10px] mb-1">Upcoming Instalments</h4>
-              <div className="bg-white rounded border border-slate-200">
+              <div className="bg-white rounded border border-slate-200 overflow-hidden">
                 {booking.instalments.map((inst, i) => (
-                  <div key={i} className="flex justify-between items-center px-2 py-1 border-b border-slate-100 last:border-0 text-xs">
+                  <div key={i} className="flex justify-between items-center px-2 py-1.5 border-b border-slate-100 last:border-0 text-xs hover:bg-slate-50">
                     <span className="text-slate-500">{formatDate(inst.dueDate)}</span>
                     <div className="text-right">
                       <div className="text-slate-700 font-medium">{formatMoney(inst.amount)}</div>
@@ -103,6 +140,11 @@ const ExpandedDetails = ({ booking }) => {
               </div>
             </div>
           )}
+        </div>
+        
+        {/* PAYMENT TERMINAL (Full Width) */}
+        <div className="col-span-1 md:col-span-3">
+            <PaymentTerminal booking={booking} onUpdate={onUpdate} />
         </div>
       </div>
     </div>
@@ -227,7 +269,10 @@ export default function ApprovedBookings() {
                       {isExpanded && (
                         <tr>
                           <td colSpan="8" className="p-0">
-                            <ExpandedDetails booking={b} />
+                            <ExpandedDetails 
+                              booking={b} 
+                              onUpdate={fetchApprovedBookings}
+                            />
                           </td>
                         </tr>
                       )}
@@ -248,3 +293,5 @@ export default function ApprovedBookings() {
     </div>
   );
 }
+
+

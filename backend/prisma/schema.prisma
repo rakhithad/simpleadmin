@@ -196,14 +196,10 @@ enum CostCategory {
   OTHER
 }
 
-// Pending tables done
-
-
 model Booking {
   id                Int             @id @default(autoincrement())
   folderNo          String          @unique @map("folder_no") // <--- Q1: Unqiue String ID
   
-  // Copied fields
   refNo             String          @map("ref_no")
   paxName           String          @map("pax_name")
   agentName         String          @map("agent_name")
@@ -218,7 +214,6 @@ model Booking {
   pcDate            DateTime        @map("pc_date")
   travelDate        DateTime?       @map("travel_date")
   
-  // Financials
   paymentMethod     PaymentMethod   @map("payment_method")
   revenue           Float?          @map("revenue")
   prodCost          Float?          @map("prod_cost")
@@ -229,7 +224,6 @@ model Booking {
   
   description       String?         @map("description")
   
-  // Meta
   approvedById      String          @map("approved_by_id")
   approvedBy        User            @relation(fields: [approvedById], references: [id])
   createdAt         DateTime        @default(now()) @map("created_at")
@@ -240,6 +234,10 @@ model Booking {
   instalments       Instalment[]
   passengers        Passenger[]
   supplierCosts     SupplierCostItem[]
+
+  isSettled         Boolean      @default(false) @map("is_settled")
+  settledAt         DateTime?    @map("settled_at")
+  transactions      Transaction[]
 
   @@map("bookings")
 }
@@ -264,21 +262,20 @@ model Instalment {
   
   dueDate           DateTime       @map("due_date")
   
-  // Q2: Expected vs Received
   amount            Float          @map("expected_amount") // What they SHOULD pay
   paidAmount        Float          @default(0) @map("paid_amount") // What they ACTUALLY paid
   
-  // Q2: Type
   type              InstalmentType @default(INSTALMENT)
   
   status            String         @default("PENDING") // PENDING, PAID, PARTIAL
   
   createdAt         DateTime       @default(now()) @map("created_at")
   updatedAt         DateTime       @updatedAt @map("updated_at")
+  transactions      Transaction[]
+  
   @@map("instalments")
 }
 
-// Q2: New Enum
 enum InstalmentType {
   INSTALMENT
   SETTLEMENT
@@ -318,9 +315,24 @@ model SupplierCostItem {
   @@map("supplier_costs")
 }
 
+model Transaction {
+  id                Int       @id @default(autoincrement())
+  
+  amount            Float     // How much received
+  method            String    // CASH, BANK, CARD
+  date              DateTime  @default(now())
+  reference         String?   // Check No, Bank Ref, etc.
+  
+  bookingId         Int       @map("booking_id")
+  booking           Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  instalmentId      Int?      @map("instalment_id")
+  instalment        Instalment? @relation(fields: [instalmentId], references: [id])
 
-
-
+  createdAt         DateTime  @default(now()) @map("created_at")
+  
+  @@map("transactions")
+}
 
 
 

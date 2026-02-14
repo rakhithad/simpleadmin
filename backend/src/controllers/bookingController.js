@@ -44,8 +44,10 @@ exports.getApprovedBookings = async (req, res) => {
         passengers: true,
         initialPayments: true,
         instalments: true,
-        supplierCosts: true, // <--- Now including costs
-        approvedBy: { select: { firstName: true, lastName: true } } // <--- Now including approver name
+        supplierCosts: true, 
+        approvedBy: { select: { firstName: true, lastName: true } },
+        transactions: true
+
       }
     });
     
@@ -53,5 +55,72 @@ exports.getApprovedBookings = async (req, res) => {
   } catch (error) {
     console.error("Fetch Approved Error:", error);
     res.status(500).json({ success: false, message: 'Failed to fetch bookings' });
+  }
+};
+
+exports.addTransaction = async (req, res) => {
+  const { bookingId } = req.params;
+  const { amount, method, date, reference, instalmentId } = req.body;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // A. Create the Audit Record
+      await tx.transaction.create({
+        data: {
+          amount: parseFloat(amount),
+          method,
+          date: new Date(date),
+          reference,
+          bookingId: parseInt(bookingId),
+          instalmentId: instalmentId ? parseInt(instalmentId) : null
+        }
+      });
+
+      // B. If linked to an Instalment, update its progress
+      if (instalmentId) {
+        const instId = parseInt(instalmentId);
+        
+        // Increment paid amount
+        await tx.instalment.update({
+          where: { id: instId },
+          data: {
+            paidAmount: { increment: parseFloat(amount) },
+            status: 'PARTIAL' // Mark as partial initially
+          }
+        });
+        
+        // Check if fully paid
+        const inst = await tx.instalment.findUnique({ where: { id: instId } });
+        if (inst.paidAmount >= inst.amount - 0.05) { // 0.05 tolerance
+           await tx.instalment.update({ 
+             where: { id: instId }, 
+             data: { status: 'PAID' } 
+           });
+        }
+      }
+    });
+
+    res.status(200).json({ success: true, message: 'Payment Recorded' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to record payment' });
+  }
+};
+
+// 2. SETTLE BOOKING (Close the file)
+exports.settleBooking = async (req, res) => {
+  const { bookingId } = req.params;
+  try {
+    await prisma.booking.update({
+      where: { id: parseInt(bookingId) },
+      data: { 
+        isSettled: true,
+        settledAt: new Date(),
+        bookingStatus: 'COMPLETED' // Optional: Mark whole booking done
+      }
+    });
+    res.status(200).json({ success: true, message: 'Booking Settled & Closed' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to settle' });
   }
 };
