@@ -61,53 +61,65 @@ exports.getApprovedBookings = async (req, res) => {
 
 exports.addTransaction = async (req, res) => {
   const { bookingId } = req.params;
-  const { amount, method, date, reference, instalmentId } = req.body;
+  const { amount, method, date, reference } = req.body; // Notice: No instalmentId
+  let paymentAmount = parseFloat(amount);
 
   try {
     await prisma.$transaction(async (tx) => {
-      // A. Create the Audit Record
+      // A. Create the Audit Record (The Receipt) - This holds the TRUE cash amount
       await tx.transaction.create({
         data: {
-          amount: parseFloat(amount),
+          amount: paymentAmount,
           method,
           date: new Date(date),
           reference,
           bookingId: parseInt(bookingId),
-          instalmentId: instalmentId ? parseInt(instalmentId) : null
         }
       });
 
-      // B. If linked to an Instalment, update its progress
-      if (instalmentId) {
-        const instId = parseInt(instalmentId);
-        
-        // Increment paid amount
-        await tx.instalment.update({
-          where: { id: instId },
-          data: {
-            paidAmount: { increment: parseFloat(amount) },
-            status: 'PARTIAL' // Mark as partial initially
+      // B. STRICT WATERFALL LOGIC
+      // Fetch all instalments for this booking, ordered by Date (Oldest First)
+      const instalments = await tx.instalment.findMany({
+        where: { bookingId: parseInt(bookingId) },
+        orderBy: { dueDate: 'asc' }
+      });
+
+      // Pour the money into the buckets sequentially
+      for (let inst of instalments) {
+        if (paymentAmount <= 0) break; // We ran out of money to pour
+
+        const amountNeeded = inst.amount - (inst.paidAmount || 0);
+
+        // Only pour if this bucket needs money
+        if (amountNeeded > 0) {
+          if (paymentAmount >= amountNeeded) {
+            // Bucket fills up completely!
+            await tx.instalment.update({
+              where: { id: inst.id },
+              data: { paidAmount: inst.amount, status: 'PAID' }
+            });
+            paymentAmount -= amountNeeded; // Subtract what we used, carry the rest forward
+          } else {
+            // Bucket partially fills, and we are out of money
+            await tx.instalment.update({
+              where: { id: inst.id },
+              data: { paidAmount: (inst.paidAmount || 0) + paymentAmount, status: 'PARTIAL' }
+            });
+            paymentAmount = 0; // Out of money
           }
-        });
-        
-        // Check if fully paid
-        const inst = await tx.instalment.findUnique({ where: { id: instId } });
-        if (inst.paidAmount >= inst.amount - 0.05) { // 0.05 tolerance
-           await tx.instalment.update({ 
-             where: { id: instId }, 
-             data: { status: 'PAID' } 
-           });
         }
       }
+      
+      // Note: If paymentAmount is STILL > 0 here, it means they overpaid all instalments.
+      // We don't need to put it in an instalment. It is safely recorded in the Transaction table!
     });
 
-    res.status(200).json({ success: true, message: 'Payment Recorded' });
+    res.status(200).json({ success: true, message: 'Payment Automatically Allocated' });
   } catch (error) {
-    console.error(error);
+    console.error("Transaction Error:", error);
     res.status(500).json({ success: false, message: 'Failed to record payment' });
   }
 };
-
 // 2. SETTLE BOOKING (Close the file)
 exports.settleBooking = async (req, res) => {
   const { bookingId } = req.params;
