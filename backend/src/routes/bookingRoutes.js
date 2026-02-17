@@ -20,4 +20,6 @@ router.post('/:bookingId/supplier-payment', authMiddleware, bookingController.ad
 
 router.put('/approved/:id', authMiddleware, bookingController.updateLiveBooking);
 
+router.post('/approved/:id/date-change', authMiddleware, bookingController.createDateChange);
+
 module.exports = router;

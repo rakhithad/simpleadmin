@@ -240,6 +240,10 @@ model Booking {
   settledAt         DateTime?    @map("settled_at")
   transactions      Transaction[]
 
+  parentId        Int?        @map("parent_id")
+  parent          Booking?    @relation("BookingHistory", fields: [parentId], references: [id])
+  amendments      Booking[]   @relation("BookingHistory")
+
   @@map("bookings")
 }
 

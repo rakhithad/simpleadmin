@@ -23,25 +23,38 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
     revenue: booking.revenue || 0,
     transFee: booking.transFee || 0,
     surcharge: booking.surcharge || 0,
-    supplierCosts: [...(booking.supplierCosts || [])]
+    travelDate: booking.travelDate ? booking.travelDate.split('T')[0] : '', 
+    supplierCosts: [...(booking.supplierCosts || [])],
+    instalments: booking.instalments ? booking.instalments.map(i => ({ ...i, dueDate: i.dueDate.split('T')[0] })) : [],
+    // NEW: Load existing initial payments into state
+    initialPayments: booking.initialPayments ? booking.initialPayments.map(ip => ({ ...ip, paymentDate: ip.paymentDate.split('T')[0] })) : []
   });
   const [loading, setLoading] = useState(false);
 
-  // Auto-calculate live changes
   const currentProdCost = formData.supplierCosts.reduce((sum, c) => sum + parseFloat(c.amount || 0), 0);
   const currentProfit = parseFloat(formData.revenue || 0) - (currentProdCost + parseFloat(formData.transFee || 0) + parseFloat(formData.surcharge || 0));
 
-  const addSupplierRow = () => {
-    setFormData({
-      ...formData,
-      supplierCosts: [...formData.supplierCosts, { supplier: 'BTRES', category: 'FLIGHT', amount: 0 }]
-    });
-  };
-
+  // --- Handlers ---
+  const addSupplierRow = () => setFormData({ ...formData, supplierCosts: [...formData.supplierCosts, { supplier: 'BTRES', category: 'FLIGHT', amount: 0 }] });
   const updateSupplierRow = (index, field, value) => {
     const newCosts = [...formData.supplierCosts];
     newCosts[index][field] = value;
     setFormData({ ...formData, supplierCosts: newCosts });
+  };
+
+  const addInstalmentRow = () => setFormData({ ...formData, instalments: [...formData.instalments, { dueDate: new Date().toISOString().split('T')[0], amount: 0 }] });
+  const updateInstalmentRow = (index, field, value) => {
+    const newInsts = [...formData.instalments];
+    newInsts[index][field] = value;
+    setFormData({ ...formData, instalments: newInsts });
+  };
+
+  // NEW: Initial Payment Handlers
+  const addInitialPaymentRow = () => setFormData({ ...formData, initialPayments: [...formData.initialPayments, { paymentDate: new Date().toISOString().split('T')[0], transactionMethod: 'BANK', amount: 0 }] });
+  const updateInitialPaymentRow = (index, field, value) => {
+    const newIPs = [...formData.initialPayments];
+    newIPs[index][field] = value;
+    setFormData({ ...formData, initialPayments: newIPs });
   };
 
   const submitEdit = async (e) => {
@@ -65,11 +78,11 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] backdrop-blur-sm p-4">
-      <form onSubmit={submitEdit} className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden animate-fade-in flex flex-col max-h-[90vh]">
+      <form onSubmit={submitEdit} className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden animate-fade-in flex flex-col max-h-[95vh]">
         
         <div className="bg-slate-800 text-white px-6 py-4 flex justify-between items-center">
           <div>
-            <h2 className="text-lg font-bold">Edit Financial Ledger</h2>
+            <h2 className="text-lg font-bold">Edit Financial Ledger & Trip Info</h2>
             <p className="text-xs text-slate-300">Folder #{booking.folderNo} • {booking.paxName}</p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-300 hover:text-white font-bold text-xl">&times;</button>
@@ -78,37 +91,83 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
         <div className="p-6 overflow-y-auto flex-1 bg-slate-50 space-y-6">
           
           {/* Top Level Financials */}
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-4 gap-4">
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Travel Date</label><input type="date" className="w-full border p-2 rounded mt-1 text-sm font-bold" value={formData.travelDate} onChange={e => setFormData({...formData, travelDate: e.target.value})} required/></div>
             <div><label className="text-xs font-bold text-slate-500 uppercase">Revenue (£)</label><input type="number" step="0.01" className="w-full border p-2 rounded text-right font-mono mt-1" value={formData.revenue} onChange={e => setFormData({...formData, revenue: e.target.value})} required/></div>
             <div><label className="text-xs font-bold text-slate-500 uppercase">Trans Fee (£)</label><input type="number" step="0.01" className="w-full border p-2 rounded text-right font-mono mt-1" value={formData.transFee} onChange={e => setFormData({...formData, transFee: e.target.value})} required/></div>
             <div><label className="text-xs font-bold text-slate-500 uppercase">Surcharge (£)</label><input type="number" step="0.01" className="w-full border p-2 rounded text-right font-mono mt-1" value={formData.surcharge} onChange={e => setFormData({...formData, surcharge: e.target.value})} required/></div>
           </div>
 
-          {/* Supplier Editable List */}
-          <div className="bg-white border rounded-lg p-4">
-            <div className="flex justify-between items-center border-b pb-2 mb-3">
-              <h4 className="font-bold text-slate-700 text-sm">Supplier Costs</h4>
-              <button type="button" onClick={addSupplierRow} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1 rounded font-bold">+ Add Supplier</button>
-            </div>
-            
-            <div className="space-y-2">
-              {formData.supplierCosts.map((c, idx) => (
-                <div key={idx} className="flex gap-2 items-center">
-                  <select className="border p-2 rounded text-sm w-1/3" value={c.supplier} onChange={e => updateSupplierRow(idx, 'supplier', e.target.value)}>
-                    <option value="BTRES">BTRES</option><option value="LYCA">LYCA</option><option value="TRIVAGO">TRIVAGO</option><option value="OTHER">OTHER</option>
-                  </select>
-                  <select className="border p-2 rounded text-sm w-1/3" value={c.category} onChange={e => updateSupplierRow(idx, 'category', e.target.value)}>
-                    <option value="FLIGHT">FLIGHT</option><option value="HOTEL">HOTEL</option><option value="CRUISE">CRUISE</option><option value="OTHER">OTHER</option>
-                  </select>
-                  <input type="number" step="0.01" className="border p-2 rounded text-sm w-1/3 text-right font-mono" value={c.amount} onChange={e => updateSupplierRow(idx, 'amount', e.target.value)} required />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              
+              {/* LEFT COLUMN: MONEY IN (Deposits & Instalments) */}
+              <div className="space-y-6">
+                
+                {/* 1. Deposits */}
+                <div className="bg-white border border-green-200 rounded-lg p-4 shadow-sm">
+                  <div className="flex justify-between items-center border-b border-green-100 pb-2 mb-3">
+                    <h4 className="font-bold text-green-800 text-sm">Initial Payments (Deposits)</h4>
+                    <button type="button" onClick={addInitialPaymentRow} className="text-xs bg-green-100 hover:bg-green-200 text-green-800 px-3 py-1 rounded font-bold">+ Add Deposit</button>
+                  </div>
+                  <div className="space-y-2">
+                    {formData.initialPayments.length === 0 && <p className="text-xs text-slate-400 italic">No deposits recorded yet.</p>}
+                    {formData.initialPayments.map((ip, idx) => (
+                      <div key={idx} className="flex gap-2 items-center">
+                        <input type="date" className="border p-2 rounded text-sm w-1/3" value={ip.paymentDate} onChange={e => updateInitialPaymentRow(idx, 'paymentDate', e.target.value)} required />
+                        <select className="border p-2 rounded text-sm w-1/3" value={ip.transactionMethod} onChange={e => updateInitialPaymentRow(idx, 'transactionMethod', e.target.value)}>
+                          <option value="BANK">BANK</option><option value="CASH">CASH</option><option value="CARD">CARD</option>
+                        </select>
+                        <input type="number" step="0.01" placeholder="Amount" className="border p-2 rounded text-sm w-1/3 text-right font-mono" value={ip.amount} onChange={e => updateInitialPaymentRow(idx, 'amount', e.target.value)} required />
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              ))}
-              <p className="text-[10px] text-slate-400 italic mt-2">Note: To "remove" an existing supplier, change their amount to 0. This preserves payment history.</p>
-            </div>
+
+                {/* 2. Instalment Plan */}
+                <div className="bg-white border border-blue-200 rounded-lg p-4 shadow-sm">
+                  <div className="flex justify-between items-center border-b border-blue-100 pb-2 mb-3">
+                    <h4 className="font-bold text-blue-800 text-sm">Customer Payment Plan</h4>
+                    <button type="button" onClick={addInstalmentRow} className="text-xs bg-blue-100 hover:bg-blue-200 text-blue-800 px-3 py-1 rounded font-bold">+ Add Instalment</button>
+                  </div>
+                  <div className="space-y-2">
+                    {formData.instalments.length === 0 && <p className="text-xs text-slate-400 italic">No future plan set. Client pays in full.</p>}
+                    {formData.instalments.map((inst, idx) => (
+                      <div key={idx} className="flex gap-2 items-center">
+                        <input type="date" className="border p-2 rounded text-sm w-1/2" value={inst.dueDate} onChange={e => updateInstalmentRow(idx, 'dueDate', e.target.value)} required />
+                        <input type="number" step="0.01" placeholder="Amount" className="border p-2 rounded text-sm w-1/2 text-right font-mono" value={inst.amount} onChange={e => updateInstalmentRow(idx, 'amount', e.target.value)} required />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* RIGHT COLUMN: MONEY OUT (Supplier Costs) */}
+              <div className="bg-white border border-red-200 rounded-lg p-4 shadow-sm h-fit">
+                <div className="flex justify-between items-center border-b border-red-100 pb-2 mb-3">
+                  <h4 className="font-bold text-red-800 text-sm">Supplier Costs</h4>
+                  <button type="button" onClick={addSupplierRow} className="text-xs bg-red-100 hover:bg-red-200 text-red-800 px-3 py-1 rounded font-bold">+ Add Supplier</button>
+                </div>
+                
+                <div className="space-y-2">
+                  {formData.supplierCosts.map((c, idx) => (
+                    <div key={idx} className="flex gap-2 items-center">
+                      <select className="border p-2 rounded text-sm w-1/3" value={c.supplier} onChange={e => updateSupplierRow(idx, 'supplier', e.target.value)}>
+                        <option value="BTRES">BTRES</option><option value="LYCA">LYCA</option><option value="TRIVAGO">TRIVAGO</option><option value="OTHER">OTHER</option>
+                      </select>
+                      <select className="border p-2 rounded text-sm w-1/3" value={c.category} onChange={e => updateSupplierRow(idx, 'category', e.target.value)}>
+                        <option value="FLIGHT">FLIGHT</option><option value="HOTEL">HOTEL</option><option value="CRUISE">CRUISE</option><option value="OTHER">OTHER</option>
+                      </select>
+                      <input type="number" step="0.01" className="border p-2 rounded text-sm w-1/3 text-right font-mono" value={c.amount} onChange={e => updateSupplierRow(idx, 'amount', e.target.value)} required />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
           </div>
 
           {/* Live Preview Bar */}
-          <div className="bg-slate-800 text-white p-4 rounded-lg flex justify-between items-center">
+          <div className="bg-slate-800 text-white p-4 rounded-lg flex justify-between items-center shadow-inner">
             <div><span className="text-[10px] uppercase text-slate-400 block">Calculated Product Cost</span><span className="font-mono text-lg">{formatMoney(currentProdCost)}</span></div>
             <div className="text-right"><span className="text-[10px] uppercase text-slate-400 block">New Estimated Profit</span><span className="font-mono text-xl font-bold text-green-400">{formatMoney(currentProfit)}</span></div>
           </div>
@@ -124,18 +183,26 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
   );
 };
 
-// --- SUB-COMPONENT: The "Drawer" that opens up ---
-const ExpandedDetails = ({ booking, onUpdate }) => {
-  const [isEditing, setIsEditing] = useState(false); // Edit Modal State
+// --- SUB-COMPONENT: The Tabbed Drawer ---
+const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
+  // 1. Setup Family Tree
+  const versions = [parentBooking, ...(parentBooking.amendments || [])];
+  
+  // 2. Track Active Tab
+  const [activeTabId, setActiveTabId] = useState(parentBooking.id);
+  const currentViewBooking = versions.find(v => v.id === activeTabId) || parentBooking;
+
+  const [isEditing, setIsEditing] = useState(false);
   const [showSuppModal, setShowSuppModal] = useState(false);
   const [suppPayData, setSuppPayData] = useState({ amount: '', method: 'BANK', date: new Date().toISOString().split('T')[0], supplierCostId: '', supplierName: '' });
 
-  const initialTotal = booking.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
-  const instalmentPaid = booking.instalments?.reduce((sum, i) => sum + (i.paidAmount || 0), 0) || 0;
+  // Math calculated against the CURRENTLY SELECTED Tab
+  const initialTotal = currentViewBooking.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
+  const instalmentPaid = currentViewBooking.instalments?.reduce((sum, i) => sum + (i.paidAmount || 0), 0) || 0;
   const totalPaid = initialTotal + instalmentPaid;
   
-  const breakdownTotalCost = booking.supplierCosts?.reduce((sum, c) => sum + c.amount, 0) || 0;
-  const breakdownTotalPaid = booking.supplierCosts?.reduce((sum, c) => sum + (c.paidAmount || 0), 0) || 0;
+  const breakdownTotalCost = currentViewBooking.supplierCosts?.reduce((sum, c) => sum + c.amount, 0) || 0;
+  const breakdownTotalPaid = currentViewBooking.supplierCosts?.reduce((sum, c) => sum + (c.paidAmount || 0), 0) || 0;
   const totalSupplierOwed = breakdownTotalCost - breakdownTotalPaid;
 
   const handleSupplierPaySubmit = async (e) => {
@@ -143,109 +210,151 @@ const ExpandedDetails = ({ booking, onUpdate }) => {
     if(!suppPayData.amount) return;
     try {
       const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:5000/api/bookings/${booking.id}/supplier-payment`, suppPayData, { headers: { Authorization: `Bearer ${token}` } });
+      await axios.post(`http://localhost:5000/api/bookings/${currentViewBooking.id}/supplier-payment`, suppPayData, { headers: { Authorization: `Bearer ${token}` } });
       alert("Supplier Payment Recorded!");
       setShowSuppModal(false);
       onUpdate(); 
     } catch (alert) { alert("Failed to record payment"); }
   };
 
+  const handleCreateDateChange = async () => {
+    if(!window.confirm("Create a new Date Change booking for this passenger?")) return;
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.post(`http://localhost:5000/api/bookings/approved/${parentBooking.id}/date-change`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      if(res.data.success) {
+         alert("Date Change Created! Please edit the financials and set the new date.");
+         onUpdate();
+         setActiveTabId(res.data.data.id); // Auto-switch to new tab
+      }
+    } catch (alert) { alert("Error creating Date Change"); }
+  };
+
   return (
-    <div className="bg-slate-50 border-t border-b border-slate-200 p-6 shadow-inner animate-fade-in text-sm relative">
+    <div className="bg-slate-200 border-t border-b border-slate-300 p-2 shadow-inner text-sm relative">
       
-      {/* EDIT BUTTON (Only if not settled) */}
-      {!booking.isSettled && (
-        <button onClick={() => setIsEditing(true)} className="absolute top-4 right-6 text-xs font-bold text-blue-600 border border-blue-200 bg-blue-50 px-3 py-1.5 rounded hover:bg-blue-100 transition shadow-sm">
-          ✏️ Edit Financials & Suppliers
-        </button>
-      )}
+      {/* THE TAB BAR */}
+      <div className="flex gap-2 overflow-x-auto pb-2 px-2 pt-2">
+         {versions.map((v, idx) => (
+            <button 
+              key={v.id} 
+              onClick={() => setActiveTabId(v.id)}
+              className={`px-4 py-2 text-xs font-bold rounded-t-lg transition-colors flex items-center gap-2 ${activeTabId === v.id ? 'bg-slate-50 text-blue-800 shadow-md border-t-2 border-blue-600' : 'bg-slate-300 text-slate-600 hover:bg-slate-50'}`}
+            >
+              {idx === 0 ? '📂 Original Booking' : '🔄 Date Change'} 
+              <span className="bg-white/50 px-1.5 rounded text-[10px]">{v.folderNo}</span>
+            </button>
+         ))}
+         <button onClick={handleCreateDateChange} className="px-3 py-1.5 text-xs font-bold text-slate-600 border border-slate-400 border-dashed rounded hover:bg-white hover:text-blue-600 ml-auto transition-colors">
+            ➕ Add Date Change
+         </button>
+      </div>
 
-      {/* EDIT MODAL */}
-      {isEditing && <EditLedgerModal booking={booking} onClose={() => setIsEditing(false)} onUpdate={onUpdate} />}
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mt-6">
-        {/* COLUMN 1: TRIP & PAX */}
-        <div className="space-y-4">
-          <h4 className="font-bold text-slate-700 uppercase text-xs border-b border-slate-300 pb-1">Trip Details</h4>
-          <div className="grid grid-cols-2 gap-y-2 text-slate-600">
-            <div><span className="block text-[10px] text-slate-400 uppercase font-bold">Agent</span>{booking.agentName} ({booking.teamName})</div>
-            <div><span className="block text-[10px] text-slate-400 uppercase font-bold">Type</span>{booking.bookingType}</div>
-            <div><span className="block text-[10px] text-slate-400 uppercase font-bold">Travel Date</span>{formatDate(booking.travelDate)}</div>
-            <div><span className="block text-[10px] text-slate-400 uppercase font-bold">PC Date</span>{formatDate(booking.pcDate)}</div>
-          </div>
-          
-          <h4 className="font-bold text-slate-700 uppercase text-xs border-b border-slate-300 pb-1 mt-2">Passengers ({booking.numPax})</h4>
-          <div className="space-y-1">
-            {booking.passengers.map((p, i) => (
-              <div key={i} className="flex justify-between items-center text-slate-600 bg-white px-2 py-1 rounded border border-slate-200 shadow-sm">
-                <span className="font-medium">{p.title} {p.firstName} {p.lastName}</span>
-                <span className="text-[10px] text-slate-500 bg-slate-100 px-1 rounded">{p.category}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* COLUMN 2: ACCOUNTS PAYABLE */}
-        <div className="col-span-1 lg:col-span-1">
-          <div className="flex justify-between items-end border-b border-slate-300 pb-1">
-            <h4 className="font-bold text-slate-700 uppercase text-xs">Accounts Payable</h4>
-            <span className={`text-[10px] font-bold ${totalSupplierOwed > 0 ? 'text-red-500' : 'text-green-600'}`}>Total Owed: {formatMoney(totalSupplierOwed)}</span>
-          </div>
-          
-          {(!booking.supplierCosts || booking.supplierCosts.length === 0) ? (
-            <div className="bg-yellow-50 rounded border border-yellow-200 p-4 text-center mt-2">
-              <p className="text-xs text-yellow-700 italic">No breakdown items found.</p>
-            </div>
-          ) : (
-            <div className="bg-white rounded border border-slate-200 overflow-hidden mt-2 shadow-sm">
-              <div className="grid grid-cols-12 gap-2 bg-slate-100 px-3 py-1.5 border-b border-slate-200 text-[9px] font-bold text-slate-500 uppercase text-right">
-                <span className="col-span-3 text-left">Supplier</span><span className="col-span-3">Cost</span><span className="col-span-3 text-blue-600">Paid</span><span className="col-span-3 text-red-500">Owed</span>
-              </div>
-              {booking.supplierCosts.map((c, i) => {
-                 const owed = c.amount - (c.paidAmount || 0);
-                 return (
-                  <div key={i} className="grid grid-cols-12 gap-2 px-3 py-2 border-b border-slate-100 last:border-0 text-slate-600 items-center text-right text-xs font-mono">
-                    <div className="col-span-3 text-left">
-                      <div className="font-bold text-[10px] text-blue-700 bg-blue-50 inline-block px-1 rounded truncate max-w-full">{c.supplier}</div>
-                      <div className="text-[9px] text-slate-400 leading-tight">{c.category}</div>
-                    </div>
-                    <div className="col-span-3">{formatMoney(c.amount)}</div>
-                    <div className="col-span-3 text-blue-600 font-bold">{formatMoney(c.paidAmount)}</div>
-                    <div className="col-span-3 flex flex-col items-end justify-center">
-                       <span className={owed > 0 ? 'text-red-500 font-bold' : 'text-green-500'}>{formatMoney(owed)}</span>
-                       {owed > 0 && !booking.isSettled && (
-                          <button onClick={() => { setSuppPayData({...suppPayData, supplierCostId: c.id, supplierName: c.supplier, amount: owed}); setShowSuppModal(true); }} className="text-[9px] bg-slate-800 text-white px-1.5 py-0.5 rounded mt-1 hover:bg-slate-700 transition-colors">PAY</button>
-                       )}
-                    </div>
-                  </div>
-                 );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* COLUMN 3: PROFIT & LOSS */}
-        <div>
-          <h4 className="font-bold text-slate-700 uppercase text-xs border-b border-slate-300 pb-1">Profit & Loss</h4>
-          <div className="space-y-2 mt-2 bg-white p-3 rounded border border-slate-200 shadow-sm">
-            <div className="flex justify-between text-slate-500"><span>Client Revenue:</span> <span className="text-slate-800 font-bold">{formatMoney(booking.revenue)}</span></div>
-            <div className="flex justify-between text-slate-500"><span>Client Paid:</span> <span className="text-blue-600 font-bold">{formatMoney(totalPaid)}</span></div>
-            <div className="border-t border-slate-100 my-1"></div>
-            <div className="flex justify-between text-slate-500"><span>Supplier Costs:</span> <span className="text-red-400 font-medium">-{formatMoney(breakdownTotalCost)}</span></div>
-            <div className="flex justify-between text-slate-500 text-[10px] pl-2"><span>Actually Paid Out:</span> <span className="text-slate-400">-{formatMoney(breakdownTotalPaid)}</span></div>
-            <div className="border-t border-dashed my-2"></div>
-            <div className="bg-slate-50 p-2 rounded border border-slate-200">
-               <div className="flex justify-between text-xs font-bold text-slate-600">
-                  <span>Current Cash Position:</span><span className={totalPaid - breakdownTotalPaid >= 0 ? 'text-green-600' : 'text-orange-600'}>{formatMoney(totalPaid - breakdownTotalPaid)}</span>
-               </div>
-               <div className="text-[9px] text-slate-400 mt-0.5">(Cash In - Cash Out)</div>
-            </div>
-          </div>
-        </div>
+      {/* THE MAIN CONTENT AREA */}
+      <div className="bg-slate-50 p-6 rounded-b-lg rounded-tr-lg shadow-md relative animate-fade-in">
         
-        {/* PAYMENT TERMINAL */}
-        <div className="col-span-1 lg:col-span-3 mt-4">
-            <PaymentTerminal booking={booking} onUpdate={onUpdate} />
+        {!currentViewBooking.isSettled && (
+          <button onClick={() => setIsEditing(true)} className="absolute top-4 right-6 text-xs font-bold text-blue-600 border border-blue-200 bg-blue-50 px-3 py-1.5 rounded hover:bg-blue-100 transition shadow-sm">
+            ✏️ Edit Financials & Date
+          </button>
+        )}
+
+        {isEditing && <EditLedgerModal booking={currentViewBooking} onClose={() => setIsEditing(false)} onUpdate={onUpdate} />}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mt-4">
+          
+          {/* COLUMN 1: TRIP & PAX */}
+          <div className="space-y-4">
+            <h4 className="font-bold text-slate-700 uppercase text-xs border-b border-slate-300 pb-1 flex justify-between items-end">
+              Trip Details
+              <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded ${currentViewBooking.bookingType === 'DATE_CHANGE' ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800'}`}>
+                {currentViewBooking.bookingType}
+              </span>
+            </h4>
+            <div className="grid grid-cols-2 gap-y-2 text-slate-600">
+              <div><span className="block text-[10px] text-slate-400 uppercase font-bold">Agent</span>{currentViewBooking.agentName} ({currentViewBooking.teamName})</div>
+              <div><span className="block text-[10px] text-slate-400 uppercase font-bold">Route</span>{currentViewBooking.fromTo}</div>
+              <div className="col-span-2 bg-yellow-50 border border-yellow-200 p-2 rounded">
+                 <span className="block text-[10px] text-yellow-800 uppercase font-bold">Travel Date</span>
+                 <span className="font-bold text-lg text-yellow-900">{formatDate(currentViewBooking.travelDate)}</span>
+              </div>
+            </div>
+            
+            <h4 className="font-bold text-slate-700 uppercase text-xs border-b border-slate-300 pb-1 mt-2">Passengers ({currentViewBooking.numPax})</h4>
+            <div className="space-y-1">
+              {currentViewBooking.passengers.map((p, i) => (
+                <div key={i} className="flex justify-between items-center text-slate-600 bg-white px-2 py-1 rounded border border-slate-200 shadow-sm">
+                  <span className="font-medium">{p.title} {p.firstName} {p.lastName}</span>
+                  <span className="text-[10px] text-slate-500 bg-slate-100 px-1 rounded">{p.category}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* COLUMN 2: ACCOUNTS PAYABLE */}
+          <div className="col-span-1 lg:col-span-1">
+            <div className="flex justify-between items-end border-b border-slate-300 pb-1">
+              <h4 className="font-bold text-slate-700 uppercase text-xs">Accounts Payable</h4>
+              <span className={`text-[10px] font-bold ${totalSupplierOwed > 0 ? 'text-red-500' : 'text-green-600'}`}>Total Owed: {formatMoney(totalSupplierOwed)}</span>
+            </div>
+            
+            {(!currentViewBooking.supplierCosts || currentViewBooking.supplierCosts.length === 0) ? (
+              <div className="bg-yellow-50 rounded border border-yellow-200 p-4 text-center mt-2">
+                <p className="text-xs text-yellow-700 italic">No suppliers listed for this version.</p>
+              </div>
+            ) : (
+              <div className="bg-white rounded border border-slate-200 overflow-hidden mt-2 shadow-sm">
+                <div className="grid grid-cols-12 gap-2 bg-slate-100 px-3 py-1.5 border-b border-slate-200 text-[9px] font-bold text-slate-500 uppercase text-right">
+                  <span className="col-span-3 text-left">Supplier</span><span className="col-span-3">Cost</span><span className="col-span-3 text-blue-600">Paid</span><span className="col-span-3 text-red-500">Owed</span>
+                </div>
+                {currentViewBooking.supplierCosts.map((c, i) => {
+                   const owed = c.amount - (c.paidAmount || 0);
+                   return (
+                    <div key={i} className="grid grid-cols-12 gap-2 px-3 py-2 border-b border-slate-100 last:border-0 text-slate-600 items-center text-right text-xs font-mono">
+                      <div className="col-span-3 text-left">
+                        <div className="font-bold text-[10px] text-blue-700 bg-blue-50 inline-block px-1 rounded truncate max-w-full">{c.supplier}</div>
+                        <div className="text-[9px] text-slate-400 leading-tight">{c.category}</div>
+                      </div>
+                      <div className="col-span-3">{formatMoney(c.amount)}</div>
+                      <div className="col-span-3 text-blue-600 font-bold">{formatMoney(c.paidAmount)}</div>
+                      <div className="col-span-3 flex flex-col items-end justify-center">
+                         <span className={owed > 0 ? 'text-red-500 font-bold' : 'text-green-500'}>{formatMoney(owed)}</span>
+                         {owed > 0 && !currentViewBooking.isSettled && (
+                            <button onClick={() => { setSuppPayData({...suppPayData, supplierCostId: c.id, supplierName: c.supplier, amount: owed}); setShowSuppModal(true); }} className="text-[9px] bg-slate-800 text-white px-1.5 py-0.5 rounded mt-1 hover:bg-slate-700 transition-colors">PAY</button>
+                         )}
+                      </div>
+                    </div>
+                   );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* COLUMN 3: PROFIT & LOSS */}
+          <div>
+            <h4 className="font-bold text-slate-700 uppercase text-xs border-b border-slate-300 pb-1">Version Profit & Loss</h4>
+            <div className="space-y-2 mt-2 bg-white p-3 rounded border border-slate-200 shadow-sm">
+              <div className="flex justify-between text-slate-500"><span>Client Revenue:</span> <span className="text-slate-800 font-bold">{formatMoney(currentViewBooking.revenue)}</span></div>
+              <div className="flex justify-between text-slate-500"><span>Client Paid:</span> <span className="text-blue-600 font-bold">{formatMoney(totalPaid)}</span></div>
+              <div className="border-t border-slate-100 my-1"></div>
+              <div className="flex justify-between text-slate-500"><span>Supplier Costs:</span> <span className="text-red-400 font-medium">-{formatMoney(breakdownTotalCost)}</span></div>
+              <div className="flex justify-between text-slate-500 text-[10px] pl-2"><span>Actually Paid Out:</span> <span className="text-slate-400">-{formatMoney(breakdownTotalPaid)}</span></div>
+              
+              <div className="border-t border-dashed my-2"></div>
+              
+              <div className="bg-slate-50 p-2 rounded border border-slate-200">
+                 <div className="flex justify-between text-xs font-bold text-slate-600">
+                    <span>Current Cash Position:</span><span className={totalPaid - breakdownTotalPaid >= 0 ? 'text-green-600' : 'text-orange-600'}>{formatMoney(totalPaid - breakdownTotalPaid)}</span>
+                 </div>
+                 <div className="text-[9px] text-slate-400 mt-0.5">(Cash In - Cash Out)</div>
+              </div>
+            </div>
+          </div>
+          
+          {/* PAYMENT TERMINAL (Full Width) */}
+          <div className="col-span-1 lg:col-span-3 mt-4 border-t-4 border-slate-200 pt-4">
+              <PaymentTerminal booking={currentViewBooking} onUpdate={onUpdate} />
+          </div>
         </div>
       </div>
 
@@ -254,7 +363,7 @@ const ExpandedDetails = ({ booking, onUpdate }) => {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] backdrop-blur-sm">
            <form onSubmit={handleSupplierPaySubmit} className="bg-white p-6 rounded-xl w-80 shadow-2xl animate-fade-in border border-slate-100">
               <h3 className="font-bold text-slate-800 text-lg mb-1">Pay Supplier</h3>
-              <p className="text-xs text-slate-500 mb-4">Recording payment to <span className="font-bold text-blue-600">{suppPayData.supplierName}</span></p>
+              <p className="text-xs text-slate-500 mb-4">Payment to <span className="font-bold text-blue-600">{suppPayData.supplierName}</span> for Folder {currentViewBooking.folderNo}</p>
               <div className="space-y-3">
                   <div><label className="text-xs font-bold text-slate-500 block mb-1">Amount Sent (£)</label><input type="number" step="0.01" className="w-full border border-slate-300 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono font-bold text-right" value={suppPayData.amount} onChange={e => setSuppPayData({...suppPayData, amount: e.target.value})} autoFocus required /></div>
                   <div><label className="text-xs font-bold text-slate-500 block mb-1">Payment Method</label><select className="w-full border border-slate-300 p-2 rounded text-sm bg-white" value={suppPayData.method} onChange={e => setSuppPayData({...suppPayData, method: e.target.value})}><option value="BANK">Bank Transfer</option><option value="CARD">Corporate Card</option><option value="CASH">Cash</option></select></div>

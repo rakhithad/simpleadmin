@@ -39,24 +39,25 @@ exports.updateBooking = async (req, res) => {
 exports.getApprovedBookings = async (req, res) => {
   try {
     const bookings = await prisma.booking.findMany({
+      where: { parentId: null },
       orderBy: { createdAt: 'desc' },
       include: {
-        passengers: true,
-        initialPayments: true,
-        instalments: true,
-        supplierCosts: true, 
+        passengers: true, initialPayments: true, instalments: true, transactions: true,
+        supplierCosts: { include: { payments: true } },
         approvedBy: { select: { firstName: true, lastName: true } },
-        transactions: true,
-        supplierCosts: { include: { payments: true } }
-
+        
+        amendments: {
+          orderBy: { createdAt: 'asc' },
+          include: {
+            passengers: true, initialPayments: true, instalments: true, transactions: true,
+            supplierCosts: { include: { payments: true } },
+            approvedBy: { select: { firstName: true, lastName: true } }
+          }
+        }
       }
     });
-    
     res.status(200).json({ success: true, data: bookings });
-  } catch (error) {
-    console.error("Fetch Approved Error:", error);
-    res.status(500).json({ success: false, message: 'Failed to fetch bookings' });
-  }
+  } catch (error) { res.status(500).json({ success: false, message: 'Failed to fetch bookings' }); }
 };
 
 exports.addTransaction = async (req, res) => {
@@ -172,20 +173,21 @@ exports.addSupplierPayment = async (req, res) => {
   }
 };
 
+// EDIT A LIVE (APPROVED) BOOKING
 exports.updateLiveBooking = async (req, res) => {
   const { id } = req.params;
-  const { revenue, transFee, surcharge, supplierCosts } = req.body;
+  
+  // EXTRACT EVERYTHING: Added initialPayments here!
+  const { revenue, transFee, surcharge, supplierCosts, travelDate, instalments, initialPayments } = req.body;
 
   try {
     await prisma.$transaction(async (tx) => {
       
-      // 1. Calculate the NEW Product Cost based on the updated supplier list
+      // 1. Calculate New Costs & Profit
       const newProdCost = supplierCosts.reduce((sum, c) => sum + parseFloat(c.amount || 0), 0);
-      
-      // 2. Calculate the NEW Profit
       const newProfit = parseFloat(revenue) - (newProdCost + parseFloat(transFee || 0) + parseFloat(surcharge || 0));
 
-      // 3. Update the Main Booking Record
+      // 2. Update Main Booking
       await tx.booking.update({
         where: { id: parseInt(id) },
         data: {
@@ -193,39 +195,131 @@ exports.updateLiveBooking = async (req, res) => {
           transFee: parseFloat(transFee),
           surcharge: parseFloat(surcharge),
           prodCost: newProdCost,
-          profit: newProfit
+          profit: newProfit,
+          travelDate: travelDate ? new Date(travelDate) : undefined
         }
       });
 
-      // 4. Update existing suppliers and Create new ones
+      // 3. Update/Create Supplier Costs
       for (let cost of supplierCosts) {
         if (cost.id) {
-          // It's an existing supplier, just update the details
           await tx.supplierCostItem.update({
             where: { id: parseInt(cost.id) },
-            data: {
-              supplier: cost.supplier,
-              category: cost.category,
-              amount: parseFloat(cost.amount)
-            }
+            data: { supplier: cost.supplier, category: cost.category, amount: parseFloat(cost.amount) }
           });
         } else {
-          // It's a brand new supplier added during the edit
           await tx.supplierCostItem.create({
-            data: {
-              bookingId: parseInt(id),
-              supplier: cost.supplier,
-              category: cost.category,
-              amount: parseFloat(cost.amount)
-            }
+            data: { bookingId: parseInt(id), supplier: cost.supplier, category: cost.category, amount: parseFloat(cost.amount) }
           });
         }
       }
+
+      // 4. Update/Create Instalments (The Plan)
+      if (instalments) {
+        for (let inst of instalments) {
+          if (inst.id) {
+            await tx.instalment.update({
+              where: { id: parseInt(inst.id) },
+              data: { dueDate: new Date(inst.dueDate), amount: parseFloat(inst.amount) }
+            });
+          } else {
+            await tx.instalment.create({
+              data: {
+                bookingId: parseInt(id), dueDate: new Date(inst.dueDate),
+                amount: parseFloat(inst.amount), paidAmount: 0,
+                type: 'INSTALMENT', status: 'PENDING'
+              }
+            });
+          }
+        }
+      }
+
+      // 5. NEW: Update/Create Initial Payments (Deposits)
+      if (initialPayments) {
+        for (let ip of initialPayments) {
+          if (ip.id) {
+            await tx.initialPayment.update({
+              where: { id: parseInt(ip.id) },
+              data: { 
+                amount: parseFloat(ip.amount), 
+                transactionMethod: ip.transactionMethod, 
+                paymentDate: new Date(ip.paymentDate) 
+              }
+            });
+          } else {
+            await tx.initialPayment.create({
+              data: {
+                bookingId: parseInt(id),
+                amount: parseFloat(ip.amount),
+                transactionMethod: ip.transactionMethod,
+                paymentDate: new Date(ip.paymentDate)
+              }
+            });
+          }
+        }
+      }
+
     });
 
     res.status(200).json({ success: true, message: 'Live Booking Financials Updated' });
   } catch (error) {
     console.error("Live Update Error:", error);
     res.status(500).json({ success: false, message: 'Failed to update live booking' });
+  }
+};
+
+
+exports.createDateChange = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.userId;
+
+  try {
+    const parent = await prisma.booking.findUnique({
+      where: { id: parseInt(id) },
+      include: { passengers: true, amendments: true }
+    });
+
+    if (!parent) return res.status(404).json({ success: false, message: "Parent not found" });
+
+    // Generate new Folder No (e.g., if parent is "1" and has 1 amendment, this becomes "1.2")
+    const nextAmendmentNo = parent.amendments.length + 1;
+    const newFolderNo = `${parent.folderNo}.${nextAmendmentNo}`;
+
+    const dateChangeBooking = await prisma.booking.create({
+      data: {
+        folderNo: newFolderNo,
+        parentId: parent.id, // Links to original booking
+        
+        // Copy Static Info
+        refNo: parent.refNo, paxName: parent.paxName, agentName: parent.agentName,
+        teamName: parent.teamName, numPax: parent.numPax, pnr: parent.pnr,
+        airline: parent.airline, fromTo: parent.fromTo, paymentMethod: parent.paymentMethod,
+        
+        // Date Change Specifics
+        bookingType: 'DATE_CHANGE', 
+        bookingStatus: 'CONFIRMED',
+        pcDate: new Date(), 
+        travelDate: parent.travelDate, // Copied, but will be edited in the UI
+        
+        // Reset Financials to 0 (New Ledger)
+        revenue: 0, prodCost: 0, transFee: 0, surcharge: 0, profit: 0, balance: 0,
+        
+        approvedById: userId,
+
+        // Clone Passengers
+        passengers: {
+          create: parent.passengers.map(p => ({
+            title: p.title, firstName: p.firstName, lastName: p.lastName,
+            gender: p.gender, category: p.category, birthday: p.birthday,
+            contactNo: p.contactNo
+          }))
+        }
+      }
+    });
+
+    res.status(200).json({ success: true, message: "Date Change Created", data: dateChangeBooking });
+  } catch (error) {
+    console.error("Date Change Error", error);
+    res.status(500).json({ success: false, message: "Failed to create Date Change" });
   }
 };
