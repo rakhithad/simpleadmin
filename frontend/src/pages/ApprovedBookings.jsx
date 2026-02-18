@@ -6,6 +6,11 @@ import PaymentTerminal from '../components/PaymentTerminal';
 const formatDate = (d) => d ? new Date(d).toISOString().split('T')[0] : '-';
 const formatMoney = (m) => `£${parseFloat(m || 0).toFixed(2)}`;
 
+const displayFolderNo = (fn) => {
+  if (!fn) return '';
+  return fn.replace(/^FN-0*/, ''); 
+};
+
 const getPaymentStatus = (booking) => {
   const revenue = booking.revenue || 0;
   const initialTotal = booking.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
@@ -355,7 +360,7 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
               className={`px-4 py-2 text-xs font-bold rounded-t-lg transition-colors flex items-center gap-2 ${activeTabId === v.id ? 'bg-slate-50 text-blue-800 shadow-md border-t-2 border-blue-600' : 'bg-slate-300 text-slate-600 hover:bg-slate-50'}`}
             >
               {v.bookingType === 'CANCELLATION' ? '🚨 Cancellation' : (idx === 0 ? '📂 Original Booking' : '🔄 Date Change')} 
-              <span className="bg-white/50 px-1.5 rounded text-[10px]">{v.folderNo}</span>
+              <span className="bg-white/50 px-1.5 rounded text-[10px]">{displayFolderNo(v.folderNo)}</span>
             </button>
          ))}
          
@@ -577,7 +582,7 @@ export default function ApprovedBookings() {
                     <React.Fragment key={b.id}>
                       <tr onClick={() => toggleRow(b.id)} className={`cursor-pointer transition-all border-l-4 ${isExpanded ? 'bg-blue-50 border-l-blue-500' : 'hover:bg-slate-50 border-l-transparent'}`}>
                         <td className="px-4 py-4 text-center text-slate-400 text-xs">{isExpanded ? '▼' : '▶'}</td>
-                        <td className="px-6 py-4 font-bold text-blue-700">{b.folderNo}</td>
+                        <td className="px-6 py-4 font-bold text-blue-700">{displayFolderNo(b.folderNo)}</td>
                         <td className="px-6 py-4 text-slate-500">{formatDate(b.createdAt)}</td>
                         <td className="px-6 py-4 font-mono text-xs"><div className="font-bold text-slate-800">{b.refNo}</div><div className="text-slate-500">{b.pnr}</div></td>
                         <td className="px-6 py-4"><div className="font-medium text-slate-900">{b.paxName}</div><div className="text-xs text-slate-500">{b.numPax} Pax</div></td>

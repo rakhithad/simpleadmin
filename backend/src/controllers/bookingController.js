@@ -4,7 +4,26 @@ const bookingService = require('../services/bookingService');
 
 exports.createBooking = async (req, res) => {
   try {
-    // req.user comes from your Auth Middleware
+    const lastParent = await prisma.booking.findFirst({
+      where: { parentId: null },
+      orderBy: { id: 'desc' }
+    });
+
+    let nextNum = 1;
+    if (lastParent && lastParent.folderNo) {
+      // If the last one was "FN-0004", extract the "4" and add 1
+      const match = lastParent.folderNo.match(/FN-(\d+)/);
+      if (match) {
+        nextNum = parseInt(match[1]) + 1;
+      }
+    }
+
+    // Format it safely to 4 digits (e.g., FN-0005)
+    const newFolderNo = `FN-${nextNum.toString().padStart(4, '0')}`;
+
+    // Inject it into the payload so the service layer uses it
+    req.body.folderNo = newFolderNo;
+
     const booking = await bookingService.createBookingTransaction(req.body, req.user.userId);
     
     res.status(201).json({
