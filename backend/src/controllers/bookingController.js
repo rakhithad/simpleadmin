@@ -323,3 +323,105 @@ exports.createDateChange = async (req, res) => {
     res.status(500).json({ success: false, message: "Failed to create Date Change" });
   }
 };
+
+exports.cancelBooking = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const parent = await prisma.booking.findUnique({ where: { id: parseInt(id) }, include: { passengers: true } });
+    if (!parent) return res.status(404).json({ success: false, message: "Booking not found" });
+
+    await prisma.$transaction(async (tx) => {
+      // Lock ALL existing versions in this family
+      await tx.booking.updateMany({
+        where: { OR: [{ id: parent.id }, { parentId: parent.id }] },
+        data: { isLocked: true }
+      });
+
+      // Create 1.c (The Cancellation Ledger)
+      await tx.booking.create({
+        data: {
+          folderNo: `${parent.folderNo}.c`,
+          parentId: parent.id,
+          bookingType: 'CANCELLATION',
+          bookingStatus: 'CANCELLED',
+          refNo: parent.refNo, paxName: parent.paxName, agentName: parent.agentName,
+          teamName: parent.teamName, numPax: parent.numPax, pnr: parent.pnr,
+          airline: parent.airline, fromTo: parent.fromTo, paymentMethod: parent.paymentMethod,
+          pcDate: new Date(), travelDate: parent.travelDate,
+          revenue: 0, prodCost: 0, profit: 0, // Will be set by process math
+          approvedById: req.user.userId,
+          passengers: { create: parent.passengers.map(p => ({ title: p.title, firstName: p.firstName, lastName: p.lastName, gender: p.gender, category: p.category })) }
+        }
+      });
+    });
+
+    res.status(200).json({ success: true, message: "Booking Cancelled. 1.c generated." });
+  } catch (error) { res.status(500).json({ success: false, message: "Failed to cancel" }); }
+};
+
+exports.processCancellation = async (req, res) => {
+  const { id } = req.params; // This is the ID of the 1.c booking
+  const { supplierRefund, consultantFee, supplierCreditAmount, supplierName, previousDebt } = req.body;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const refund = parseFloat(supplierRefund || 0);
+      const fee = parseFloat(consultantFee || 0);
+      let paxEntitlement = Math.max(0, refund - fee);
+
+      // A. AUTO-CLEAR PAX DEBT
+      // If Pax owed us money on the previous tab, we eat that debt first
+      const debtToClear = Math.min(paxEntitlement, parseFloat(previousDebt || 0));
+      const leftoverPaxCredit = paxEntitlement - debtToClear;
+
+      // B. CREATE PAX WALLET (If leftover exists)
+      if (leftoverPaxCredit > 0) {
+        const booking = await tx.booking.findUnique({ where: { id: parseInt(id) }});
+        await tx.paxCreditNote.create({
+          data: {
+            bookingId: parseInt(id),
+            paxName: booking.paxName,
+            originalAmount: leftoverPaxCredit,
+            remainingAmount: leftoverPaxCredit
+          }
+        });
+      }
+
+      // C. CREATE SUPPLIER WALLET (Manual Input)
+      const suppCredit = parseFloat(supplierCreditAmount || 0);
+      if (suppCredit > 0) {
+        await tx.supplierCreditNote.create({
+          data: {
+            bookingId: parseInt(id),
+            supplier: supplierName || 'MIXED',
+            originalAmount: suppCredit,
+            remainingAmount: suppCredit
+          }
+        });
+      }
+
+      // D. UPDATE 1.C LEDGER
+      // Agency Profit on cancellation IS the Consultant Fee!
+      await tx.booking.update({
+        where: { id: parseInt(id) },
+        data: {
+          supplierRefund: refund,
+          cancellationFee: fee,
+          revenue: fee, // For accounting reports, the fee is the final revenue
+          profit: fee,
+          isLocked: true // Lock 1.c after processing so math can't be tampered with
+        }
+      });
+    });
+
+    res.status(200).json({ success: true, message: "Math Processed & Wallets Created" });
+  } catch (error) { res.status(500).json({ success: false, message: "Processing failed" }); }
+};
+
+exports.getOpenCredits = async (req, res) => {
+  try {
+    const paxCredits = await prisma.paxCreditNote.findMany({ where: { status: 'OPEN', remainingAmount: { gt: 0 } } });
+    const suppCredits = await prisma.supplierCreditNote.findMany({ where: { status: 'OPEN', remainingAmount: { gt: 0 } } });
+    res.status(200).json({ success: true, paxCredits, suppCredits });
+  } catch (error) { res.status(500).json({ success: false }); }
+};

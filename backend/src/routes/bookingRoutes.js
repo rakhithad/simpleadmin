@@ -22,4 +22,8 @@ router.put('/approved/:id', authMiddleware, bookingController.updateLiveBooking)
 
 router.post('/approved/:id/date-change', authMiddleware, bookingController.createDateChange);
 
+router.post('/approved/:id/cancel', authMiddleware, bookingController.cancelBooking);
+router.post('/approved/:id/process-cancellation', authMiddleware, bookingController.processCancellation);
+router.get('/credits/open', authMiddleware, bookingController.getOpenCredits);
+
 module.exports = router;

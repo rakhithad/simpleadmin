@@ -198,7 +198,7 @@ enum CostCategory {
 
 model Booking {
   id                Int             @id @default(autoincrement())
-  folderNo          String          @unique @map("folder_no") // <--- Q1: Unqiue String ID
+  folderNo          String          @unique @map("folder_no")
   
   refNo             String          @map("ref_no")
   paxName           String          @map("pax_name")
@@ -236,6 +236,8 @@ model Booking {
   supplierCosts     SupplierCostItem[]
   supplierPayments  SupplierPayment[]
 
+  isLocked           Boolean   @default(false) @map("is_locked")
+
   isSettled         Boolean      @default(false) @map("is_settled")
   settledAt         DateTime?    @map("settled_at")
   transactions      Transaction[]
@@ -243,6 +245,12 @@ model Booking {
   parentId        Int?        @map("parent_id")
   parent          Booking?    @relation("BookingHistory", fields: [parentId], references: [id])
   amendments      Booking[]   @relation("BookingHistory")
+
+  cancellationFee    Float?    @default(0) @map("cancellation_fee")
+  supplierRefund     Float?    @default(0) @map("supplier_refund")
+
+  paxCreditNotes     PaxCreditNote[]
+  supplierCreditNotes SupplierCreditNote[]
 
   @@map("bookings")
 }
@@ -326,10 +334,10 @@ model SupplierCostItem {
 
 model SupplierPayment {
   id                Int               @id @default(autoincrement())
-  amount            Float             // Amount sent to supplier
-  method            String            // BANK, CARD, CASH, CREDIT
+  amount            Float             
+  method            String            
   date              DateTime          @default(now())
-  reference         String?           // E.g., Transfer Receipt No.
+  reference         String?           
   
   bookingId         Int               @map("booking_id")
   booking           Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
@@ -338,6 +346,10 @@ model SupplierPayment {
   supplierCost      SupplierCostItem  @relation(fields: [supplierCostId], references: [id], onDelete: Cascade)
 
   createdAt         DateTime          @default(now()) @map("created_at")
+
+  supplierCreditNoteId Int?                 @map("supplier_credit_note_id")
+  supplierCreditNote   SupplierCreditNote?  @relation(fields: [supplierCreditNoteId], references: [id])
+
   @@map("supplier_payments")
 }
 
@@ -356,8 +368,43 @@ model Transaction {
   instalment        Instalment? @relation(fields: [instalmentId], references: [id])
 
   createdAt         DateTime  @default(now()) @map("created_at")
+
+  paxCreditNoteId    Int?             @map("pax_credit_note_id")
+  paxCreditNote      PaxCreditNote?   @relation(fields: [paxCreditNoteId], references: [id])
   
   @@map("transactions")
+}
+
+model PaxCreditNote {
+  id               Int      @id @default(autoincrement())
+  bookingId        Int      @map("booking_id")
+  booking          Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  paxName          String   @map("pax_name")
+  
+  originalAmount   Float    @map("original_amount")
+  remainingAmount  Float    @map("remaining_amount")
+  status           String   @default("OPEN") // OPEN, EXHAUSTED, REFUNDED_CASH
+  
+  createdAt        DateTime @default(now()) @map("created_at")
+  transactions     Transaction[] 
+
+  @@map("pax_credit_notes")
+}
+
+model SupplierCreditNote {
+  id               Int      @id @default(autoincrement())
+  bookingId        Int      @map("booking_id")
+  booking          Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  supplier         String
+  
+  originalAmount   Float    @map("original_amount")
+  remainingAmount  Float    @map("remaining_amount")
+  status           String   @default("OPEN") 
+  
+  createdAt        DateTime @default(now()) @map("created_at")
+  payments         SupplierPayment[]
+
+  @@map("supplier_credit_notes")
 }
 
 
