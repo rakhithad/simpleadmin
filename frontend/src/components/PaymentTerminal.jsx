@@ -6,7 +6,17 @@ const formatMoney = (m) => `£${parseFloat(m || 0).toFixed(2)}`;
 
 export default function PaymentTerminal({ booking, onUpdate }) {
   const [showAddModal, setShowAddModal] = useState(false);
-  const [payData, setPayData] = useState({ amount: '', method: 'BANK', date: new Date().toISOString().split('T')[0] });
+  const [payData, setPayData] = useState({ 
+    amount: '', 
+    method: 'BANK', 
+    date: new Date().toISOString().split('T')[0],
+    creditNoteId: null // Added to track which wallet we are using
+  });
+
+  // --- WALLET SEARCH STATE ---
+  const [searchFolder, setSearchFolder] = useState('');
+  const [foundWallet, setFoundWallet] = useState(null);
+  const [searchError, setSearchError] = useState('');
 
   // --- CALCULATIONS ---
   const depositTotal = booking.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
@@ -24,14 +34,11 @@ export default function PaymentTerminal({ booking, onUpdate }) {
   const overpaidAmount = Math.max(0, transactionTotal - totalInstalmentExpected);
 
   // --- MILESTONE BAR MATH ---
-  // Determine the highest value to scale the bar correctly
   const maxScale = Math.max(expectedRevenue, totalCollected, productCost, 1); 
   const costPercent = Math.min((productCost / maxScale) * 100, 100);
   const revPercent = Math.min((expectedRevenue / maxScale) * 100, 100);
   const collectedPercent = Math.min((totalCollected / maxScale) * 100, 100);
   const isOverpaid = totalCollected > expectedRevenue;
-
-  // Calculate cumulative placement for Deposit and Instalments
   const depositPercent = Math.min((depositTotal / maxScale) * 100, 100);
   
   let cumulativePlan = depositTotal;
@@ -44,17 +51,53 @@ export default function PaymentTerminal({ booking, onUpdate }) {
       };
   }) || [];
 
+  // --- HANDLERS ---
+  const searchPaxWallet = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      // FIXED URL: Added /bookings/ to the path
+      const res = await axios.get(`http://localhost:5000/api/bookings/credits/pax/search?folder=${searchFolder}`, { 
+        headers: { Authorization: `Bearer ${token}` } 
+      });
+      
+      if (res.data.success) {
+        setFoundWallet(res.data.data);
+        setSearchError('');
+      } else {
+        setFoundWallet(null);
+        setSearchError(res.data.message);
+      }
+    } catch (setSearchError) { 
+      setSearchError("Wallet not found. Try folder number like 1.c"); 
+    }
+  };
+
   const handleTransactionSubmit = async (e) => {
     e.preventDefault();
     if(!payData.amount) return;
+
+    // Safety check for Credit Notes
+    if(payData.method === 'PAX_CREDIT' && (!foundWallet || parseFloat(payData.amount) > foundWallet.remainingAmount)) {
+        return alert("Invalid credit amount or wallet not found.");
+    }
+
     try {
       const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:5000/api/bookings/${booking.id}/transaction`, payData, { headers: { Authorization: `Bearer ${token}` } });
+      const payload = { ...payData, creditNoteId: foundWallet?.id };
+      
+      await axios.post(`http://localhost:5000/api/bookings/${booking.id}/transaction`, payload, { 
+        headers: { Authorization: `Bearer ${token}` } 
+      });
+      
       alert("Payment Allocated Successfully!");
       setShowAddModal(false);
-      setPayData({ ...payData, amount: '' }); 
+      setPayData({ amount: '', method: 'BANK', date: new Date().toISOString().split('T')[0], creditNoteId: null });
+      setFoundWallet(null);
+      setSearchFolder('');
       onUpdate(); 
-    } catch (alert) { alert("Failed to record payment"); }
+    } catch (alert) { 
+      alert("Failed to record payment"); 
+    }
   };
 
   const handleSettle = async () => {
@@ -69,6 +112,7 @@ export default function PaymentTerminal({ booking, onUpdate }) {
 
   return (
     <div className="bg-white border border-slate-300 rounded-lg p-4 mt-6 shadow-sm">
+      {/* ... (Existing Header and Plan/Reality Grid stays exactly the same) ... */}
       <div className="flex justify-between items-center border-b border-slate-200 pb-3 mb-4">
         <h3 className="font-bold text-slate-700 flex items-center gap-2">
           <span>Payment & Settlement Terminal</span>
@@ -148,7 +192,7 @@ export default function PaymentTerminal({ booking, onUpdate }) {
         </div>
       </div>
 
-      {/* --- UPGRADED: THE FINANCIAL MILESTONE BAR --- */}
+      {/* --- MILESTONE TRACKER --- */}
       <div className="mt-8 px-4 bg-slate-50 border border-slate-200 rounded-lg pb-8 pt-4 shadow-sm">
         <h4 className="text-[10px] font-bold text-slate-400 uppercase mb-6 tracking-wide flex justify-between">
           <span>Financial Milestone Tracker</span>
@@ -156,8 +200,7 @@ export default function PaymentTerminal({ booking, onUpdate }) {
         </h4>
         
         <div className="relative w-full">
-           
-           {/* TOP MARKERS: Business Targets (Cost & Revenue) */}
+           {/* Markers logic... */}
            {productCost > 0 && (
              <div className="absolute bottom-full mb-1 w-0 flex flex-col items-center z-10" style={{ left: `${costPercent}%` }}>
                 <span className="text-[9px] font-bold text-red-600 bg-white px-1 rounded border border-red-200 whitespace-nowrap shadow-sm">COST {formatMoney(productCost)}</span>
@@ -171,12 +214,8 @@ export default function PaymentTerminal({ booking, onUpdate }) {
              </div>
            )}
            
-           {/* THE BAR TRACK */}
            <div className="relative w-full h-4 bg-slate-200 rounded-full overflow-hidden shadow-inner border border-slate-300">
-              {/* The Green/Gold Fill */}
               <div className={`absolute top-0 left-0 h-full transition-all duration-700 ${isOverpaid ? 'bg-gradient-to-r from-yellow-400 to-amber-500' : 'bg-green-500'}`} style={{ width: `${collectedPercent}%` }}></div>
-              
-              {/* Internal Tick Marks */}
               <div className="absolute top-0 bottom-0 border-l border-red-600/50" style={{ left: `${costPercent}%` }}></div>
               <div className="absolute top-0 bottom-0 border-l border-blue-600/50" style={{ left: `${revPercent}%` }}></div>
               {depositTotal > 0 && <div className="absolute top-0 bottom-0 border-l border-slate-700/30" style={{ left: `${depositPercent}%` }}></div>}
@@ -185,7 +224,6 @@ export default function PaymentTerminal({ booking, onUpdate }) {
               ))}
            </div>
 
-           {/* BOTTOM MARKERS: Customer Plan (Deposits & Instalments) */}
            {depositTotal > 0 && (
              <div className="absolute top-full mt-1 w-0 flex flex-col items-center z-10" style={{ left: `${depositPercent}%` }}>
                 <div className="h-2 w-[1px] bg-slate-400 mb-0.5"></div>
@@ -198,12 +236,10 @@ export default function PaymentTerminal({ booking, onUpdate }) {
                 <span className="text-[8px] font-bold text-slate-600 whitespace-nowrap">{m.label} {formatMoney(m.amount)}</span>
              </div>
            ))}
-
         </div>
-        {isOverpaid && <div className="text-xs text-amber-600 font-bold flex justify-end items-center gap-1 mt-6">⭐ Revenue Target Exceeded</div>}
       </div>
 
-      {/* BOTTOM: COMPARISON BAR */}
+      {/* --- COMPARISON BAR --- */}
       <div className="mt-6 border-t border-slate-200 pt-4">
         <div className="grid grid-cols-3 gap-4 text-center">
             <div className="p-2 opacity-60">
@@ -227,32 +263,78 @@ export default function PaymentTerminal({ booking, onUpdate }) {
         </div>
       </div>
 
-      {/* MODAL: Add Transaction */}
+      {/* --- ADD TRANSACTION MODAL (WITH WALLET SEARCH) --- */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] backdrop-blur-sm">
-           <form onSubmit={handleTransactionSubmit} className="bg-white p-6 rounded-xl w-80 shadow-2xl animate-fade-in border border-slate-100">
+           <form onSubmit={handleTransactionSubmit} className="bg-white p-6 rounded-xl w-96 shadow-2xl animate-fade-in border border-slate-100">
               <h3 className="font-bold mb-4 text-slate-800 text-lg">Record Payment</h3>
               <div className="space-y-4">
                   <div>
-                      <label className="text-xs font-bold text-slate-500 block mb-1">Amount Received (£)</label>
-                      <input type="number" step="0.01" placeholder="0.00" className="w-full border border-slate-300 p-2 rounded font-mono font-bold text-right" onChange={e => setPayData({...payData, amount: e.target.value})} autoFocus required />
-                  </div>
-                  <div>
                       <label className="text-xs font-bold text-slate-500 block mb-1">Method</label>
-                      <select className="w-full border border-slate-300 p-2 rounded text-sm bg-white" onChange={e => setPayData({...payData, method: e.target.value})}>
-                         <option value="BANK">Bank Transfer</option><option value="CASH">Cash</option><option value="CARD">Card</option>
+                      <select 
+                        className="w-full border border-slate-300 p-2 rounded text-sm bg-white font-bold" 
+                        value={payData.method}
+                        onChange={e => {
+                          setPayData({...payData, method: e.target.value});
+                          if (e.target.value !== 'PAX_CREDIT') setFoundWallet(null);
+                        }}
+                      >
+                         <option value="BANK">Bank Transfer</option>
+                         <option value="CASH">Cash</option>
+                         <option value="CARD">Card</option>
+                         <option value="PAX_CREDIT">Use Pax Credit Note</option>
                       </select>
                   </div>
+
+                  {/* WALLET SEARCH BOX */}
+                  {payData.method === 'PAX_CREDIT' && (
+                     <div className="bg-blue-50 p-3 rounded border border-blue-200 animate-fade-in">
+                        <label className="text-[10px] font-bold text-blue-800 uppercase">Search Cancelled Folder No.</label>
+                        <div className="flex gap-2 mt-1">
+                           <input 
+                              type="text" 
+                              placeholder="e.g. 1.c" 
+                              className="w-full border p-1.5 rounded text-sm font-mono uppercase" 
+                              value={searchFolder} 
+                              onChange={e => setSearchFolder(e.target.value)} 
+                           />
+                           <button 
+                              type="button" 
+                              onClick={searchPaxWallet} 
+                              className="bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap"
+                           >Search</button>
+                        </div>
+                        {searchError && <div className="text-[10px] text-red-500 mt-1 font-bold">{searchError}</div>}
+                        {foundWallet && (
+                           <div className="mt-2 bg-white p-2 rounded border border-blue-100 flex justify-between items-center text-xs">
+                             <span className="font-bold text-slate-600">Available Wallet:</span>
+                             <span className="font-mono text-green-600 font-bold text-sm">{formatMoney(foundWallet.remainingAmount)}</span>
+                           </div>
+                        )}
+                     </div>
+                  )}
+
+                  <div>
+                      <label className="text-xs font-bold text-slate-500 block mb-1">Amount to Apply (£)</label>
+                      <input 
+                        type="number" 
+                        step="0.01" 
+                        max={foundWallet ? foundWallet.remainingAmount : undefined}
+                        className="w-full border border-slate-300 p-2 rounded font-mono font-bold text-right text-lg text-blue-700" 
+                        placeholder="0.00"
+                        onChange={e => setPayData({...payData, amount: e.target.value})} 
+                        required 
+                      />
+                  </div>
+                  
                   <div>
                       <label className="text-xs font-bold text-slate-500 block mb-1">Date Received</label>
                       <input type="date" className="w-full border border-slate-300 p-2 rounded text-sm" value={payData.date} onChange={e => setPayData({...payData, date: e.target.value})} />
                   </div>
               </div>
-              <div className="bg-blue-50 text-blue-700 p-2 rounded text-[10px] mt-4 border border-blue-100 font-medium">
-                ℹ️ Money will automatically fill the oldest unpaid instalment first.
-              </div>
-              <div className="flex gap-2 mt-4">
-                 <button type="submit" className="flex-1 bg-slate-800 text-white rounded py-2 text-sm font-bold hover:bg-slate-700 transition-colors">Save</button>
+              
+              <div className="flex gap-2 mt-6">
+                 <button type="submit" className="flex-1 bg-slate-800 text-white rounded py-2 text-sm font-bold hover:bg-slate-700 transition-colors">Confirm Payment</button>
                  <button type="button" onClick={() => setShowAddModal(false)} className="flex-1 bg-slate-200 text-slate-700 rounded py-2 text-sm font-bold hover:bg-slate-300 transition-colors">Cancel</button>
               </div>
            </form>

@@ -23,73 +23,99 @@ const getPaymentStatus = (booking) => {
 };
 
 // --- SUB-COMPONENT: The Cancellation Dashboard (1.c) ---
-const CancellationDashboard = ({ booking, familyVersions, onUpdate }) => {
+const CancellationDashboard = ({ booking, onUpdate }) => {
   const [formData, setFormData] = useState({
-    supplierRefund: 0, consultantFee: 0, supplierName: 'BTRES'
+    supplierRefund: 0, consultantFee: 0, supplierName: 'BTRES', supplierReference: ''
   });
+  const [walletRef, setWalletRef] = useState(null);
+  const [showBankRefund, setShowBankRefund] = useState(false);
+  const [bankRefundAmount, setBankRefundAmount] = useState('');
 
-  // 1. CALCULATE HISTORICAL TOTALS ACROSS THE ENTIRE CHAIN (Original + All DACs)
-  const activeVersions = familyVersions.filter(v => v.bookingType !== 'CANCELLATION');
-  
-  // Total Cash Actually Received from Pax across all versions
-  const totalPaxPaid = activeVersions.reduce((total, v) => {
-    const deposits = v.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
-    const instalments = v.transactions?.reduce((sum, t) => sum + t.amount, 0) || 0; // Look at actual transactions, not just instalment plan
-    return total + deposits + instalments;
-  }, 0);
+  // Fetch the wallet to see if there is money remaining when locked
+  useEffect(() => {
+    if (booking.isLocked) {
+       const token = localStorage.getItem('token');
+       axios.get(`http://localhost:5000/api/bookings/credits/pax/search?folder=${booking.folderNo}`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(res => { if (res.data.success) setWalletRef(res.data.data); });
+    }
+  }, [booking.isLocked, booking.folderNo]);
 
-  // Total Supplier Costs historically booked
-  const totalSupplierCost = activeVersions.reduce((total, v) => {
-    return total + (v.supplierCosts?.reduce((sum, c) => sum + c.amount, 0) || 0);
-  }, 0);
-
-  // 2. THE NEW "CASH-BASIS" MATH
-  // Supplier Penalty = Total Historical Cost - What they refunded us
-  const supplierPenalty = Math.max(0, totalSupplierCost - formData.supplierRefund);
-  
-  // Total Deductions from the Pax's money
-  const totalDeductions = supplierPenalty + formData.consultantFee;
-
-  // Final Pax Wallet = What they paid us MINUS the penalties/fees. (Never goes below 0)
-  const finalPaxWallet = Math.max(0, totalPaxPaid - totalDeductions);
+  const finalPaxWallet = Math.max(0, formData.supplierRefund - formData.consultantFee);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if(!window.confirm(`Finalize Cancellation?\n\nPax Wallet: ${formatMoney(finalPaxWallet)}\nSupplier Wallet: ${formatMoney(formData.supplierRefund)}\nProfit: ${formatMoney(formData.consultantFee)}`)) return;
+    if(!window.confirm(`Finalize Cancellation?\n\nSupplier Refund: ${formatMoney(formData.supplierRefund)}\nPax Wallet: ${formatMoney(finalPaxWallet)}\nProfit: ${formatMoney(formData.consultantFee)}`)) return;
     
     try {
       const token = localStorage.getItem('token');
-      // We automatically send supplierRefund as the credit amount, and we no longer need previousDebt
-      const payload = { 
-        ...formData, 
-        supplierCreditAmount: formData.supplierRefund, 
-        previousDebt: 0 
-      }; 
-      
-      await axios.post(`http://localhost:5000/api/bookings/approved/${booking.id}/process-cancellation`, payload, { headers: { Authorization: `Bearer ${token}` } });
+      await axios.post(`http://localhost:5000/api/bookings/approved/${booking.id}/process-cancellation`, formData, { headers: { Authorization: `Bearer ${token}` } });
       alert("Cancellation Finalized and Wallets Created!");
       onUpdate();
     } catch (alert) { alert("Failed to process cancellation"); }
   };
 
+  const handleBankRefund = async (e) => {
+    e.preventDefault();
+    if(!window.confirm(`Send ${formatMoney(bankRefundAmount)} to Passenger's Bank?`)) return;
+    try {
+      const token = localStorage.getItem('token');
+      await axios.post(`http://localhost:5000/api/bookings/credits/pax/${walletRef.id}/refund`, { amount: bankRefundAmount }, { headers: { Authorization: `Bearer ${token}` } });
+      alert("Cash Refund Processed!");
+      setShowBankRefund(false);
+      onUpdate();
+    } catch (alert) { alert("Failed to refund."); }
+  };
+
   if (booking.isLocked) {
     return (
       <div className="bg-white p-6 rounded shadow-sm border border-red-200 mt-4">
-        <h3 className="text-red-700 font-bold text-lg mb-4 border-b pb-2 flex items-center gap-2">🔒 Final Cancellation Record (LOCKED)</h3>
+        <h3 className="text-red-700 font-bold text-lg mb-4 border-b pb-2 flex justify-between items-center">
+           <span>🔒 Final Cancellation Record</span>
+           <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded">Folder: {booking.folderNo}</span>
+        </h3>
         <div className="grid grid-cols-3 gap-6 text-sm">
            <div className="bg-slate-50 p-4 rounded border">
               <span className="block text-slate-500 uppercase text-[10px] font-bold">Supplier Credit Note Received</span>
               <span className="text-xl font-mono text-slate-800">{formatMoney(booking.supplierRefund)}</span>
            </div>
            <div className="bg-green-50 p-4 rounded border border-green-200">
-              <span className="block text-green-700 uppercase text-[10px] font-bold">Agency Profit (Consultant Fee)</span>
-              <span className="text-xl font-mono font-bold text-green-700">{formatMoney(booking.cancellationFee)}</span>
+              <span className="block text-green-700 uppercase text-[10px] font-bold">Agency Profit (Fee)</span>
+              <span className="text-xl font-mono font-bold text-green-700">{formatMoney(booking.consultantFee)}</span>
            </div>
-           <div className="bg-blue-50 p-4 rounded border border-blue-200 col-span-3">
-              <span className="block text-blue-800 font-bold mb-2">Digital Wallets Generated:</span>
-              <p className="text-xs text-slate-600">Pax & Supplier Credit Notes have been sent to the Global Wallet system and can be used on future bookings.</p>
+           
+           {/* LIVE PAX WALLET STATUS */}
+           <div className="bg-blue-50 p-4 rounded border border-blue-200 relative">
+              <span className="block text-blue-800 uppercase text-[10px] font-bold">Pax Wallet Balance</span>
+              {walletRef ? (
+                 <>
+                   <span className="text-xl font-mono font-bold text-blue-700">{formatMoney(walletRef.remainingAmount)}</span>
+                   <button onClick={() => setShowBankRefund(true)} className="absolute bottom-4 right-4 text-[10px] bg-blue-600 text-white px-2 py-1 rounded font-bold hover:bg-blue-700 transition-colors">
+                      💸 Refund to Bank
+                   </button>
+                 </>
+              ) : (
+                 <span className="text-sm font-bold text-slate-500 mt-1 block">£0.00 (Exhausted / Emptied)</span>
+              )}
            </div>
         </div>
+
+        {/* BANK REFUND MODAL */}
+        {showBankRefund && walletRef && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] backdrop-blur-sm">
+             <form onSubmit={handleBankRefund} className="bg-white p-6 rounded-xl w-80 shadow-2xl animate-fade-in border border-slate-100">
+                <h3 className="font-bold mb-2 text-slate-800 text-lg">Cash Out Wallet</h3>
+                <p className="text-xs text-slate-500 mb-4">Send funds from digital wallet back to the passenger's actual bank account.</p>
+                <div>
+                   <label className="text-xs font-bold text-slate-500 block mb-1">Amount to Send (£)</label>
+                   <input type="number" step="0.01" max={walletRef.remainingAmount} className="w-full border border-slate-300 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono font-bold text-right text-lg text-blue-700" value={bankRefundAmount} onChange={e => setBankRefundAmount(e.target.value)} required />
+                </div>
+                <div className="flex gap-2 mt-6">
+                   <button type="submit" className="flex-1 bg-blue-600 text-white rounded py-2 text-sm font-bold hover:bg-blue-700 transition-colors">Process Refund</button>
+                   <button type="button" onClick={() => setShowBankRefund(false)} className="flex-1 bg-slate-200 text-slate-700 rounded py-2 text-sm font-bold hover:bg-slate-300 transition-colors">Cancel</button>
+                </div>
+             </form>
+          </div>
+        )}
       </div>
     );
   }
@@ -97,43 +123,53 @@ const CancellationDashboard = ({ booking, familyVersions, onUpdate }) => {
   return (
     <div className="bg-red-50 p-6 rounded shadow-sm border border-red-200 mt-4 animate-fade-in">
       <h3 className="text-red-800 font-bold text-lg mb-2">Process Cancellation & Wallets</h3>
-      <p className="text-xs text-red-600 mb-6">Careful: Saving this will permanently lock the cancellation math and generate the digital credit notes. Pending passenger instalments will be discarded.</p>
+      <p className="text-xs text-red-600 mb-6">Careful: Saving this will permanently lock the cancellation math and generate the digital credit notes.</p>
       
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="grid grid-cols-2 gap-8">
            
            {/* SUPPLIER SIDE */}
-           <div className="bg-white p-4 rounded border shadow-sm">
-             <h4 className="font-bold text-slate-700 mb-4 border-b pb-2 text-sm">1. Supplier Money Recovery</h4>
-             <label className="block text-xs font-bold text-slate-500">Total Refund Granted by Supplier (£)</label>
-             <input type="number" step="0.01" className="w-full border p-2 rounded mt-1 mb-4 font-mono text-right" value={formData.supplierRefund} onChange={e => setFormData({...formData, supplierRefund: parseFloat(e.target.value) || 0})} required/>
-             
-             <label className="block text-xs font-bold text-slate-500 mt-4">Which Supplier issued this Credit Note?</label>
-             <select className="w-full border p-2 rounded mt-1 text-sm bg-slate-50" value={formData.supplierName} onChange={e => setFormData({...formData, supplierName: e.target.value})}>
-                <option value="BTRES">BTRES</option><option value="LYCA">LYCA</option><option value="OTHER">OTHER</option>
-             </select>
-             <p className="text-[10px] text-slate-400 mt-2 italic">Note: The entire refund amount will be automatically converted into a Supplier Credit Note.</p>
+           <div className="bg-white p-4 rounded border shadow-sm flex flex-col justify-between">
+             <div>
+               <h4 className="font-bold text-slate-700 mb-4 border-b pb-2 text-sm">1. Supplier Money Recovery</h4>
+               <label className="block text-xs font-bold text-slate-500">Total Refund Granted by Supplier (£)</label>
+               <input type="number" step="0.01" className="w-full border p-2 rounded mt-1 mb-4 font-mono text-right font-bold text-lg text-blue-700" value={formData.supplierRefund} onChange={e => setFormData({...formData, supplierRefund: parseFloat(e.target.value) || 0})} required/>
+               
+               <div className="grid grid-cols-2 gap-2 mb-4">
+                 <div>
+                   <label className="block text-xs font-bold text-slate-500">Supplier Name</label>
+                   <select className="w-full border p-2 rounded mt-1 text-sm bg-slate-50" value={formData.supplierName} onChange={e => setFormData({...formData, supplierName: e.target.value})}>
+                      <option value="BTRES">BTRES</option><option value="LYCA">LYCA</option><option value="OTHER">OTHER</option>
+                   </select>
+                 </div>
+                 <div>
+                   <label className="block text-xs font-bold text-slate-500">Supplier Reference / PNR</label>
+                   <input type="text" placeholder="e.g. REF-12345" className="w-full border p-2 rounded mt-1 text-sm" value={formData.supplierReference} onChange={e => setFormData({...formData, supplierReference: e.target.value})} />
+                 </div>
+               </div>
+             </div>
+             <p className="text-[10px] text-slate-400 italic bg-slate-50 p-2 rounded border border-slate-100">Note: This exact refund amount will be securely stored as a Supplier Credit Note for future use.</p>
            </div>
 
            {/* PAX SIDE */}
            <div className="bg-white p-4 rounded border shadow-sm">
              <h4 className="font-bold text-slate-700 mb-4 border-b pb-2 text-sm">2. Pax Entitlement & Profit</h4>
              <label className="block text-xs font-bold text-green-600">Consultant Fee (Agency Profit) (£)</label>
-             <input type="number" step="0.01" className="w-full border border-green-300 p-2 rounded mt-1 mb-4 font-mono text-right bg-green-50" value={formData.consultantFee} onChange={e => setFormData({...formData, consultantFee: parseFloat(e.target.value) || 0})} required/>
+             <input type="number" step="0.01" className="w-full border border-green-300 p-2 rounded mt-1 mb-6 font-mono text-right bg-green-50 font-bold" value={formData.consultantFee} onChange={e => setFormData({...formData, consultantFee: parseFloat(e.target.value) || 0})} required/>
              
-             <div className="bg-slate-50 p-3 rounded border border-slate-200 space-y-2 text-xs text-slate-600">
-                <div className="flex justify-between"><span>Historical Pax Cash Received:</span> <span>{formatMoney(totalPaxPaid)}</span></div>
-                <div className="flex justify-between text-red-500"><span>Non-Refundable Supplier Penalty:</span> <span>-{formatMoney(supplierPenalty)}</span></div>
-                <div className="flex justify-between text-red-500 border-b border-dashed pb-2"><span>Consultant Fee:</span> <span>-{formatMoney(formData.consultantFee)}</span></div>
-                <div className="pt-1 flex justify-between font-bold text-blue-700 text-sm">
-                   <span>Final Pax Wallet Credit:</span> <span>{formatMoney(finalPaxWallet)}</span>
+             {/* Clean, Top-to-Bottom Breakdown */}
+             <div className="bg-slate-50 p-4 rounded border border-slate-200 space-y-3 text-sm text-slate-600">
+                <div className="flex justify-between font-medium"><span>Supplier Refund Amount:</span> <span className="font-mono">{formatMoney(formData.supplierRefund)}</span></div>
+                <div className="flex justify-between text-red-500 border-b border-dashed pb-3"><span>Consultant Fee:</span> <span className="font-mono">-{formatMoney(formData.consultantFee)}</span></div>
+                <div className="pt-1 flex justify-between font-bold text-blue-700 text-lg items-center">
+                   <span>Final Pax Credit Wallet:</span> <span className="font-mono bg-blue-100 px-2 py-1 rounded">{formatMoney(finalPaxWallet)}</span>
                 </div>
              </div>
            </div>
         </div>
         
-        <button type="submit" className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded shadow-lg transition-colors">
-          Lock Cancellation & Generate Wallets
+        <button type="submit" className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded shadow-lg transition-colors text-lg uppercase tracking-wider">
+          Lock Cancellation & Generate Credit Notes
         </button>
       </form>
     </div>
@@ -297,8 +333,14 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
   const currentViewBooking = versions.find(v => v.id === activeTabId) || parentBooking;
 
   const [isEditing, setIsEditing] = useState(false);
+  
+  // Supplier Pay Modal State
   const [showSuppModal, setShowSuppModal] = useState(false);
-  const [suppPayData, setSuppPayData] = useState({ amount: '', method: 'BANK', date: new Date().toISOString().split('T')[0], supplierCostId: '', supplierName: '' });
+  const [suppPayData, setSuppPayData] = useState({ amount: '', method: 'BANK', date: new Date().toISOString().split('T')[0], supplierCostId: '', supplierName: '', supplierCreditNoteId: null });
+  
+  // Supplier Wallet Search State
+  const [searchSuppFolder, setSearchSuppFolder] = useState('');
+  const [foundSuppWallet, setFoundSuppWallet] = useState(null);
 
   const initialTotal = currentViewBooking.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
   const instalmentPaid = currentViewBooking.instalments?.reduce((sum, i) => sum + (i.paidAmount || 0), 0) || 0;
@@ -308,14 +350,32 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
   const breakdownTotalPaid = currentViewBooking.supplierCosts?.reduce((sum, c) => sum + (c.paidAmount || 0), 0) || 0;
   const totalSupplierOwed = breakdownTotalCost - breakdownTotalPaid;
 
-  const handleSupplierPaySubmit = async (e) => {
-    e.preventDefault();
-    if(!suppPayData.amount) return;
+  const searchSupplierWallet = async () => {
     try {
       const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:5000/api/bookings/${currentViewBooking.id}/supplier-payment`, suppPayData, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.get(`http://localhost:5000/api/credits/supplier/search?folder=${searchSuppFolder}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.data.success) {
+         setFoundSuppWallet(res.data.data);
+      } else { 
+         setFoundSuppWallet(null); 
+         alert(res.data.message); 
+      }
+    } catch (alert) { alert("Search failed."); }
+  };
+
+  const handleSupplierPaySubmit = async (e) => {
+    e.preventDefault();
+    if(suppPayData.method === 'SUPPLIER_CREDIT' && (!foundSuppWallet || suppPayData.amount > foundSuppWallet.remainingAmount)) {
+       return alert("Invalid credit amount! Please ensure the credit covers the payment amount.");
+    }
+    try {
+      const token = localStorage.getItem('token');
+      const payload = { ...suppPayData, supplierCreditNoteId: foundSuppWallet?.id };
+      await axios.post(`http://localhost:5000/api/bookings/${currentViewBooking.id}/supplier-payment`, payload, { headers: { Authorization: `Bearer ${token}` } });
       alert("Supplier Payment Recorded!");
       setShowSuppModal(false);
+      setFoundSuppWallet(null);
+      setSearchSuppFolder('');
       onUpdate(); 
     } catch (alert) { alert("Failed to record payment"); }
   };
@@ -341,7 +401,6 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
       if(res.data.success) {
          alert("Cancellation Folder Generated!");
          onUpdate();
-         // Attempt to select the newly created cancellation tab
          const newCancelTab = res.data.data?.id; 
          if (newCancelTab) setActiveTabId(newCancelTab);
       }
@@ -499,20 +558,49 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
         )}
       </div>
 
-      {/* SUPPLIER PAY MODAL */}
+      {/* SUPPLIER PAY MODAL (WITH SUPPLIER CREDIT SEARCH) */}
       {showSuppModal && !currentViewBooking.isLocked && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] backdrop-blur-sm">
-           <form onSubmit={handleSupplierPaySubmit} className="bg-white p-6 rounded-xl w-80 shadow-2xl animate-fade-in border border-slate-100">
+           <form onSubmit={handleSupplierPaySubmit} className="bg-white p-6 rounded-xl w-96 shadow-2xl animate-fade-in border border-slate-100">
               <h3 className="font-bold text-slate-800 text-lg mb-1">Pay Supplier</h3>
-              <p className="text-xs text-slate-500 mb-4">Payment to <span className="font-bold text-blue-600">{suppPayData.supplierName}</span> for Folder {currentViewBooking.folderNo}</p>
+              <p className="text-xs text-slate-500 mb-4">Payment to <span className="font-bold text-blue-600">{suppPayData.supplierName}</span></p>
+              
               <div className="space-y-3">
-                  <div><label className="text-xs font-bold text-slate-500 block mb-1">Amount Sent (£)</label><input type="number" step="0.01" className="w-full border border-slate-300 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono font-bold text-right" value={suppPayData.amount} onChange={e => setSuppPayData({...suppPayData, amount: e.target.value})} autoFocus required /></div>
-                  <div><label className="text-xs font-bold text-slate-500 block mb-1">Payment Method</label><select className="w-full border border-slate-300 p-2 rounded text-sm bg-white" value={suppPayData.method} onChange={e => setSuppPayData({...suppPayData, method: e.target.value})}><option value="BANK">Bank Transfer</option><option value="CARD">Corporate Card</option><option value="CASH">Cash</option></select></div>
-                  <div><label className="text-xs font-bold text-slate-500 block mb-1">Date Sent</label><input type="date" className="w-full border border-slate-300 p-2 rounded text-sm" value={suppPayData.date} onChange={e => setSuppPayData({...suppPayData, date: e.target.value})} /></div>
+                  <div>
+                      <label className="text-xs font-bold text-slate-500 block mb-1">Payment Method</label>
+                      <select className="w-full border border-slate-300 p-2 rounded text-sm bg-slate-50 font-bold" value={suppPayData.method} onChange={e => {
+                          setSuppPayData({...suppPayData, method: e.target.value});
+                          if(e.target.value !== 'SUPPLIER_CREDIT') setFoundSuppWallet(null);
+                      }}>
+                         <option value="BANK">Bank Transfer</option><option value="CARD">Corporate Card</option>
+                         <option value="SUPPLIER_CREDIT">Use Supplier Credit Note</option>
+                      </select>
+                  </div>
+
+                  {suppPayData.method === 'SUPPLIER_CREDIT' && (
+                     <div className="bg-red-50 p-3 rounded border border-red-200">
+                        <label className="text-[10px] font-bold text-red-800 uppercase">Search Cancelled Folder No.</label>
+                        <div className="flex gap-2 mt-1">
+                           <input type="text" placeholder="e.g. FN-0001.c" className="w-full border border-slate-300 p-1.5 rounded text-sm font-mono" value={searchSuppFolder} onChange={e => setSearchSuppFolder(e.target.value)} />
+                           <button type="button" onClick={searchSupplierWallet} className="bg-red-600 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-red-700 transition-colors">Search</button>
+                        </div>
+                        {foundSuppWallet && (
+                           <div className="mt-2 bg-white p-2 rounded border border-red-100 flex flex-col gap-1 text-xs shadow-sm">
+                             <div className="flex justify-between items-center"><span className="font-bold text-slate-600">Available Credit:</span><span className="font-mono text-green-600 font-bold text-sm">{formatMoney(foundSuppWallet.remainingAmount)}</span></div>
+                             <div className="flex justify-between text-[10px] text-slate-400"><span>Supplier Ref:</span> <span className="font-mono">{foundSuppWallet.reference || 'N/A'}</span></div>
+                           </div>
+                        )}
+                     </div>
+                  )}
+
+                  <div>
+                     <label className="text-xs font-bold text-slate-500 block mb-1">Amount Sent (£)</label>
+                     <input type="number" step="0.01" max={foundSuppWallet ? foundSuppWallet.remainingAmount : undefined} className="w-full border border-slate-300 p-2 rounded font-mono font-bold text-right text-lg text-red-700 outline-none focus:ring-2 focus:ring-red-500" value={suppPayData.amount} onChange={e => setSuppPayData({...suppPayData, amount: e.target.value})} required />
+                  </div>
               </div>
               <div className="flex gap-2 mt-6">
-                 <button className="flex-1 bg-slate-800 text-white rounded py-2 text-sm font-bold hover:bg-slate-700" type="submit">Record Outgoing</button>
-                 <button className="flex-1 bg-slate-200 text-slate-700 rounded py-2 text-sm font-bold hover:bg-slate-300" type="button" onClick={() => setShowSuppModal(false)}>Cancel</button>
+                 <button className="flex-1 bg-slate-800 text-white rounded py-2 text-sm font-bold hover:bg-slate-700 transition-colors" type="submit">Record Outgoing</button>
+                 <button className="flex-1 bg-slate-200 text-slate-700 rounded py-2 text-sm font-bold hover:bg-slate-300 transition-colors" type="button" onClick={() => setShowSuppModal(false)}>Cancel</button>
               </div>
            </form>
         </div>
@@ -555,7 +643,7 @@ export default function ApprovedBookings() {
       <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
           <div><h1 className="text-2xl font-bold text-slate-800">Master Booking Records</h1><p className="text-sm text-slate-500">Click any row to expand details.</p></div>
-          <input type="text" placeholder="Search Folder, Ref, or Pax..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="px-4 py-2 border border-slate-300 rounded-lg w-full md:w-80 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+          <input type="text" placeholder="Search Folder, Ref, or Pax..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="px-4 py-2 border border-slate-300 rounded-lg w-full md:w-80 text-sm focus:ring-2 focus:ring-blue-500 outline-none shadow-sm" />
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -597,7 +685,7 @@ export default function ApprovedBookings() {
                         <td className="px-6 py-4 text-right font-mono font-bold text-green-600">
                            {/* If cancelled, show the fee profit, else original profit */}
                            {b.amendments?.some(a => a.bookingType === 'CANCELLATION') 
-                              ? formatMoney(b.amendments.find(a => a.bookingType === 'CANCELLATION').cancellationFee) 
+                              ? formatMoney(b.amendments.find(a => a.bookingType === 'CANCELLATION').consultantFee) 
                               : formatMoney(b.profit)}
                         </td>
                       </tr>
@@ -614,3 +702,4 @@ export default function ApprovedBookings() {
     </div>
   );
 }
+

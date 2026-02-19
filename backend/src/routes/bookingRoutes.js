@@ -26,4 +26,10 @@ router.post('/approved/:id/cancel', authMiddleware, bookingController.cancelBook
 router.post('/approved/:id/process-cancellation', authMiddleware, bookingController.processCancellation);
 router.get('/credits/open', authMiddleware, bookingController.getOpenCredits);
 
+router.get('/credits/pax/search', authMiddleware, bookingController.searchPaxCredit);
+router.get('/credits/supplier/search', authMiddleware, bookingController.searchSupplierCredit);
+router.post('/credits/pax/:id/refund', authMiddleware, bookingController.refundPaxCreditToBank);
+
+
+
 module.exports = router;

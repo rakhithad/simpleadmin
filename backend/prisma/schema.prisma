@@ -246,7 +246,7 @@ model Booking {
   parent          Booking?    @relation("BookingHistory", fields: [parentId], references: [id])
   amendments      Booking[]   @relation("BookingHistory")
 
-  cancellationFee    Float?    @default(0) @map("cancellation_fee")
+  consultantFee      Float?    @default(0) @map("consultant_fee")
   supplierRefund     Float?    @default(0) @map("supplier_refund")
 
   paxCreditNotes     PaxCreditNote[]
@@ -396,6 +396,7 @@ model SupplierCreditNote {
   bookingId        Int      @map("booking_id")
   booking          Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   supplier         String
+  reference        String?
   
   originalAmount   Float    @map("original_amount")
   remainingAmount  Float    @map("remaining_amount")

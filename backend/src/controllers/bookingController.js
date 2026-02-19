@@ -81,65 +81,80 @@ exports.getApprovedBookings = async (req, res) => {
 
 exports.addTransaction = async (req, res) => {
   const { bookingId } = req.params;
-  const { amount, method, date, reference } = req.body; // Notice: No instalmentId
+  const { amount, method, date, reference, creditNoteId } = req.body; 
   let paymentAmount = parseFloat(amount);
+  const originalPaymentAmount = paymentAmount;
 
   try {
     await prisma.$transaction(async (tx) => {
-      // A. Create the Audit Record (The Receipt) - This holds the TRUE cash amount
+      
+      // A. HANDLE WALLET DEDUCTION (If paying with Pax Credit)
+      let validCreditNoteId = null;
+      if (method === 'PAX_CREDIT' && creditNoteId) {
+        const note = await tx.paxCreditNote.findUnique({ where: { id: parseInt(creditNoteId) } });
+        if (!note || note.remainingAmount < paymentAmount) {
+            throw new Error("Invalid or insufficient Pax Credit Wallet balance.");
+        }
+        
+        const newBalance = note.remainingAmount - paymentAmount;
+        await tx.paxCreditNote.update({
+          where: { id: note.id },
+          data: {
+            remainingAmount: newBalance,
+            status: newBalance <= 0.05 ? 'EXHAUSTED' : 'OPEN' // Mark as exhausted if empty
+          }
+        });
+        validCreditNoteId = note.id;
+      }
+
+      // B. Create the Transaction Record
       await tx.transaction.create({
         data: {
-          amount: paymentAmount,
+          amount: originalPaymentAmount,
           method,
           date: new Date(date),
           reference,
           bookingId: parseInt(bookingId),
+          paxCreditNoteId: validCreditNoteId // Link it to the wallet if used
         }
       });
 
-      // B. STRICT WATERFALL LOGIC
-      // Fetch all instalments for this booking, ordered by Date (Oldest First)
+      // C. STRICT WATERFALL LOGIC (Fill the oldest instalments first)
       const instalments = await tx.instalment.findMany({
         where: { bookingId: parseInt(bookingId) },
         orderBy: { dueDate: 'asc' }
       });
 
-      // Pour the money into the buckets sequentially
       for (let inst of instalments) {
-        if (paymentAmount <= 0) break; // We ran out of money to pour
-
+        if (paymentAmount <= 0) break; 
         const amountNeeded = inst.amount - (inst.paidAmount || 0);
 
-        // Only pour if this bucket needs money
         if (amountNeeded > 0) {
           if (paymentAmount >= amountNeeded) {
-            // Bucket fills up completely!
             await tx.instalment.update({
               where: { id: inst.id },
               data: { paidAmount: inst.amount, status: 'PAID' }
             });
-            paymentAmount -= amountNeeded; // Subtract what we used, carry the rest forward
+            paymentAmount -= amountNeeded; 
           } else {
-            // Bucket partially fills, and we are out of money
             await tx.instalment.update({
               where: { id: inst.id },
               data: { paidAmount: (inst.paidAmount || 0) + paymentAmount, status: 'PARTIAL' }
             });
-            paymentAmount = 0; // Out of money
+            paymentAmount = 0; 
           }
         }
       }
-      
-      // Note: If paymentAmount is STILL > 0 here, it means they overpaid all instalments.
-      // We don't need to put it in an instalment. It is safely recorded in the Transaction table!
     });
 
     res.status(200).json({ success: true, message: 'Payment Automatically Allocated' });
   } catch (error) {
     console.error("Transaction Error:", error);
-    res.status(500).json({ success: false, message: 'Failed to record payment' });
+    res.status(500).json({ success: false, message: error.message || 'Failed to record payment' });
   }
 };
+
+
 // 2. SETTLE BOOKING (Close the file)
 exports.settleBooking = async (req, res) => {
   const { bookingId } = req.params;
@@ -158,41 +173,66 @@ exports.settleBooking = async (req, res) => {
   }
 };
 
+// 2. RECORD SUPPLIER PAYMENT (With Wallet Support)
 exports.addSupplierPayment = async (req, res) => {
-  const { bookingId } = req.params;
-  const { amount, method, date, reference, supplierCostId } = req.body;
+  const { bookingId } = req.params; 
+  const { amount, method, date, supplierCostId, supplierCreditNoteId } = req.body;
+  const paymentAmount = parseFloat(amount);
 
   try {
     await prisma.$transaction(async (tx) => {
-      // 1. Create the outgoing payment record
-      await tx.supplierPayment.create({
-        data: {
-          amount: parseFloat(amount),
-          method,
-          date: new Date(date),
-          reference,
-          bookingId: parseInt(bookingId),
-          supplierCostId: parseInt(supplierCostId)
-        }
-      });
+      
+      // A. HANDLE WALLET DEDUCTION (If paying with Supplier Credit)
+      let validSuppCreditId = null;
+      if (method === 'SUPPLIER_CREDIT' && supplierCreditNoteId) {
+         const note = await tx.supplierCreditNote.findUnique({ where: { id: parseInt(supplierCreditNoteId) } });
+         if (!note || note.remainingAmount < paymentAmount) {
+             throw new Error("Invalid or insufficient Supplier Credit Note balance.");
+         }
+         
+         const newBalance = note.remainingAmount - paymentAmount;
+         await tx.supplierCreditNote.update({
+           where: { id: note.id },
+           data: {
+             remainingAmount: newBalance,
+             status: newBalance <= 0.05 ? 'EXHAUSTED' : 'OPEN'
+           }
+         });
+         validSuppCreditId = note.id;
+      }
 
-      // 2. Update the paid amount on the specific Supplier Cost Item
+      // B. Create the Outgoing Payment Record
+      const paymentData = {
+        amount: paymentAmount,
+        method: method,
+        date: new Date(date), // <--- THE FIX: Changed from 'paymentDate' to 'date' to match your schema
+        supplierCost: { connect: { id: parseInt(supplierCostId) } },
+        booking: { connect: { id: parseInt(bookingId) } } 
+      };
+
+      // If a credit note was used, connect it using your exact schema relation name
+      if (validSuppCreditId) {
+        paymentData.supplierCreditNote = { connect: { id: validSuppCreditId } };
+      }
+
+      await tx.supplierPayment.create({ data: paymentData });
+
+      // C. Update the Supplier Cost Item's Total Paid
+      const costItem = await tx.supplierCostItem.findUnique({ where: { id: parseInt(supplierCostId) } });
       await tx.supplierCostItem.update({
         where: { id: parseInt(supplierCostId) },
-        data: {
-          paidAmount: { increment: parseFloat(amount) }
-        }
+        data: { paidAmount: (costItem.paidAmount || 0) + paymentAmount }
       });
     });
 
-    res.status(200).json({ success: true, message: 'Supplier Payment Recorded' });
+    res.status(200).json({ success: true, message: 'Supplier payment recorded' });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: 'Failed to record supplier payment' });
+    console.error("Supplier Payment Error:", error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to pay supplier' });
   }
 };
 
-// EDIT A LIVE (APPROVED) BOOKING
+
 exports.updateLiveBooking = async (req, res) => {
   const { id } = req.params;
   
@@ -379,62 +419,61 @@ exports.cancelBooking = async (req, res) => {
 };
 
 exports.processCancellation = async (req, res) => {
-  const { id } = req.params; // This is the ID of the 1.c booking
-  const { supplierRefund, consultantFee, supplierCreditAmount, supplierName, previousDebt } = req.body;
+  const { id } = req.params; // 1.c booking ID
+  const { supplierRefund, consultantFee, supplierName, supplierReference } = req.body;
 
   try {
     await prisma.$transaction(async (tx) => {
       const refund = parseFloat(supplierRefund || 0);
       const fee = parseFloat(consultantFee || 0);
-      let paxEntitlement = Math.max(0, refund - fee);
 
-      // A. AUTO-CLEAR PAX DEBT
-      // If Pax owed us money on the previous tab, we eat that debt first
-      const debtToClear = Math.min(paxEntitlement, parseFloat(previousDebt || 0));
-      const leftoverPaxCredit = paxEntitlement - debtToClear;
+      // The exact formula you requested:
+      const paxCreditAmount = Math.max(0, refund - fee);
 
-      // B. CREATE PAX WALLET (If leftover exists)
-      if (leftoverPaxCredit > 0) {
+      // 1. CREATE PAX WALLET
+      if (paxCreditAmount > 0) {
         const booking = await tx.booking.findUnique({ where: { id: parseInt(id) }});
         await tx.paxCreditNote.create({
           data: {
             bookingId: parseInt(id),
             paxName: booking.paxName,
-            originalAmount: leftoverPaxCredit,
-            remainingAmount: leftoverPaxCredit
+            originalAmount: paxCreditAmount,
+            remainingAmount: paxCreditAmount
           }
         });
       }
 
-      // C. CREATE SUPPLIER WALLET (Manual Input)
-      const suppCredit = parseFloat(supplierCreditAmount || 0);
-      if (suppCredit > 0) {
+      // 2. CREATE SUPPLIER WALLET (With Reference)
+      if (refund > 0) {
         await tx.supplierCreditNote.create({
           data: {
             bookingId: parseInt(id),
-            supplier: supplierName || 'MIXED',
-            originalAmount: suppCredit,
-            remainingAmount: suppCredit
+            supplier: supplierName || 'OTHER',
+            reference: supplierReference || '', // Saved for your records
+            originalAmount: refund,
+            remainingAmount: refund
           }
         });
       }
 
-      // D. UPDATE 1.C LEDGER
-      // Agency Profit on cancellation IS the Consultant Fee!
+      // 3. UPDATE 1.C LEDGER
       await tx.booking.update({
         where: { id: parseInt(id) },
         data: {
           supplierRefund: refund,
-          cancellationFee: fee,
-          revenue: fee, // For accounting reports, the fee is the final revenue
+          consultantFee: fee,
+          revenue: fee, // The consultant fee is your final revenue/profit
           profit: fee,
-          isLocked: true // Lock 1.c after processing so math can't be tampered with
+          isLocked: true // Lock the folder forever
         }
       });
     });
 
-    res.status(200).json({ success: true, message: "Math Processed & Wallets Created" });
-  } catch (error) { res.status(500).json({ success: false, message: "Processing failed" }); }
+    res.status(200).json({ success: true, message: "Cancellation Processed" });
+  } catch (error) { 
+    console.error("Cancel Error:", error);
+    res.status(500).json({ success: false, message: "Processing failed" }); 
+  }
 };
 
 exports.getOpenCredits = async (req, res) => {
@@ -443,4 +482,57 @@ exports.getOpenCredits = async (req, res) => {
     const suppCredits = await prisma.supplierCreditNote.findMany({ where: { status: 'OPEN', remainingAmount: { gt: 0 } } });
     res.status(200).json({ success: true, paxCredits, suppCredits });
   } catch (error) { res.status(500).json({ success: false }); }
+};
+
+// --- NEW: SEARCH PAX WALLET BY FOLDER ---
+exports.searchPaxCredit = async (req, res) => {
+  const { folder } = req.query;
+  try {
+    const credit = await prisma.paxCreditNote.findFirst({
+      where: { booking: { folderNo: folder }, status: 'OPEN', remainingAmount: { gt: 0 } },
+      include: { booking: { select: { folderNo: true } } }
+    });
+    if (!credit) return res.json({ success: false, message: "No active wallet found for this folder." });
+    res.json({ success: true, data: credit });
+  } catch(err) { res.status(500).json({ success: false }); }
+};
+
+// --- NEW: SEARCH SUPPLIER WALLET BY FOLDER ---
+exports.searchSupplierCredit = async (req, res) => {
+  const { folder } = req.query;
+  try {
+    const credit = await prisma.supplierCreditNote.findFirst({
+      where: { booking: { folderNo: folder }, status: 'OPEN', remainingAmount: { gt: 0 } },
+      include: { booking: { select: { folderNo: true } } }
+    });
+    if (!credit) return res.json({ success: false, message: "No active wallet found for this folder." });
+    res.json({ success: true, data: credit });
+  } catch(err) { res.status(500).json({ success: false }); }
+};
+
+// --- NEW: CASH OUT WALLET TO PAX BANK ---
+exports.refundPaxCreditToBank = async (req, res) => {
+  const { id } = params; // The PaxCreditNote ID
+  const { amount } = req.body;
+  
+  try {
+    await prisma.$transaction(async (tx) => {
+      const note = await tx.paxCreditNote.findUnique({ where: { id: parseInt(id) } });
+      const refundAmt = parseFloat(amount);
+      
+      if (note.remainingAmount < refundAmt) throw new Error('Insufficient Funds');
+      
+      const newBalance = note.remainingAmount - refundAmt;
+      
+      await tx.paxCreditNote.update({
+         where: { id: parseInt(id) },
+         data: { 
+           remainingAmount: newBalance,
+           status: newBalance <= 0 ? 'REFUNDED_CASH' : 'OPEN'
+         }
+      });
+      // Optionally, you can create a log/receipt in another table here if you want historical proof.
+    });
+    res.json({ success: true, message: "Refund to Bank Processed" });
+  } catch(err) { res.status(500).json({ success: false, message: err.message }); }
 };
