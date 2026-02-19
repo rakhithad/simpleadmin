@@ -512,7 +512,7 @@ exports.searchSupplierCredit = async (req, res) => {
 
 // --- NEW: CASH OUT WALLET TO PAX BANK ---
 exports.refundPaxCreditToBank = async (req, res) => {
-  const { id } = params; // The PaxCreditNote ID
+  const { id } = req.params;
   const { amount } = req.body;
   
   try {

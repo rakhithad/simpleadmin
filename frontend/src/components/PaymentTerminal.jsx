@@ -82,22 +82,23 @@ export default function PaymentTerminal({ booking, onUpdate }) {
     }
 
     try {
-      const token = localStorage.getItem('token');
-      const payload = { ...payData, creditNoteId: foundWallet?.id };
-      
-      await axios.post(`http://localhost:5000/api/bookings/${booking.id}/transaction`, payload, { 
-        headers: { Authorization: `Bearer ${token}` } 
-      });
-      
-      alert("Payment Allocated Successfully!");
-      setShowAddModal(false);
-      setPayData({ amount: '', method: 'BANK', date: new Date().toISOString().split('T')[0], creditNoteId: null });
-      setFoundWallet(null);
-      setSearchFolder('');
-      onUpdate(); 
-    } catch (alert) { 
-      alert("Failed to record payment"); 
-    }
+  const token = localStorage.getItem('token');
+  const payload = { ...payData, creditNoteId: foundWallet?.id };
+  
+  await axios.post(`http://localhost:5000/api/bookings/${booking.id}/transaction`, payload, { 
+    headers: { Authorization: `Bearer ${token}` } 
+  });
+  
+  alert("Payment Allocated Successfully!");
+  setShowAddModal(false);
+  
+  // --- CRITICAL FIX: CLEAR SEARCH CACHE ---
+  setFoundWallet(null); 
+  setSearchFolder(''); 
+  setPayData({ amount: '', method: 'BANK', date: new Date().toISOString().split('T')[0], creditNoteId: null });
+
+  onUpdate(); // This will trigger the page to refresh data from the server
+} catch (alert) { alert("Failed to record payment"); }
   };
 
   const handleSettle = async () => {

@@ -54,17 +54,29 @@ const CancellationDashboard = ({ booking, onUpdate }) => {
     } catch (alert) { alert("Failed to process cancellation"); }
   };
 
-  const handleBankRefund = async (e) => {
-    e.preventDefault();
-    if(!window.confirm(`Send ${formatMoney(bankRefundAmount)} to Passenger's Bank?`)) return;
-    try {
-      const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:5000/api/bookings/credits/pax/${walletRef.id}/refund`, { amount: bankRefundAmount }, { headers: { Authorization: `Bearer ${token}` } });
-      alert("Cash Refund Processed!");
-      setShowBankRefund(false);
-      onUpdate();
-    } catch (alert) { alert("Failed to refund."); }
-  };
+const handleBankRefund = async (e) => {
+  e.preventDefault();
+  if(!window.confirm(`Send ${formatMoney(bankRefundAmount)} to Passenger's Bank?`)) return;
+  try {
+    const token = localStorage.getItem('token');
+    await axios.post(`http://localhost:5000/api/bookings/credits/pax/${walletRef.id}/refund`, 
+      { amount: bankRefundAmount }, 
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    
+    alert("Cash Refund Processed!");
+    setShowBankRefund(false);
+    setBankRefundAmount(''); // Clear the input
+
+    // --- CRITICAL FIX: RE-FETCH WALLET BALANCE ---
+    const res = await axios.get(`http://localhost:5000/api/bookings/credits/pax/search?folder=${booking.folderNo}`, { 
+      headers: { Authorization: `Bearer ${token}` } 
+    });
+    if (res.data.success) setWalletRef(res.data.data); // This updates the UI to £200
+
+    onUpdate(); // Refreshes the parent page financials
+  } catch (alert) { alert("Failed to refund."); }
+};
 
   if (booking.isLocked) {
     return (
