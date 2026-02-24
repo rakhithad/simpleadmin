@@ -3,6 +3,8 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import BookingManager from './pages/BookingManager';
 import ApprovedBookings from './pages/ApprovedBookings';
+import CommissionLedger from './pages/CommissionLedger';
+
 
 function App() {
   return (
@@ -13,6 +15,7 @@ function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/bookings" element={<BookingManager />} />
           <Route path="/approved-bookings" element={<ApprovedBookings />} />
+          <Route path="/commissions" element={<CommissionLedger />} />
         </Routes>
       </div>
     </Router>

@@ -2,38 +2,49 @@ const prisma = require('../config/db');
 const bookingService = require('../services/bookingService');
 
 
+const recordCommission = async (tx, booking, type, amount, profit) => {
+  const date = new Date();
+  const monthString = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+  
+  // 1. Check if we already paid this!
+  const existing = await tx.commissionLedger.findFirst({
+    where: { bookingId: booking.id, type: type }
+  });
+
+  if (existing) {
+    console.log(`[COMMISSION] ⚠️ ALREADY EXISTS: Skipping duplicate payment for ${booking.folderNo}`);
+    return;
+  }
+
+  // 2. Create the Entry
+  console.log(`[COMMISSION] 🟢 WRITING LEDGER: Agent=${booking.agentName} | Amount=${amount} | Month=${monthString}`);
+  await tx.commissionLedger.create({
+    data: {
+      bookingId: booking.id,
+      folderNo: booking.folderNo,
+      agentName: booking.agentName,
+      reference: booking.refNo,
+      type,
+      amount,
+      snapshotProfit: profit,
+      month: monthString
+    }
+  });
+};
+
 exports.createBooking = async (req, res) => {
   try {
-    const lastParent = await prisma.booking.findFirst({
-      where: { parentId: null },
-      orderBy: { id: 'desc' }
-    });
-
-    let nextNum = 1;
-    if (lastParent && lastParent.folderNo) {
-      // If the last one was "FN-0004", extract the "4" and add 1
-      const match = lastParent.folderNo.match(/FN-(\d+)/);
-      if (match) {
-        nextNum = parseInt(match[1]) + 1;
-      }
-    }
-
-    // Format it safely to 4 digits (e.g., FN-0005)
-    const newFolderNo = `FN-${nextNum.toString().padStart(4, '0')}`;
-
-    // Inject it into the payload so the service layer uses it
-    req.body.folderNo = newFolderNo;
-
-    const booking = await bookingService.createBookingTransaction(req.body, req.user.userId);
+    // 1. Call Service Layer directly (No Folder Number logic needed here)
+    const bookingResult = await bookingService.createBookingTransaction(req.body, req.user.userId);
     
-    res.status(201).json({
-      success: true,
-      data: booking,
-      message: 'Booking created successfully'
+    res.status(201).json({ 
+      success: true, 
+      data: bookingResult, 
+      message: 'Draft Booking created successfully (Pending Approval)' 
     });
   } catch (error) {
     console.error('Create Booking Error:', error);
-    res.status(500).json({ success: false, message: 'Failed to create booking', error: error.message });
+    res.status(500).json({ success: false, message: 'Failed to create booking' });
   }
 };
 
@@ -158,17 +169,46 @@ exports.addTransaction = async (req, res) => {
 // 2. SETTLE BOOKING (Close the file)
 exports.settleBooking = async (req, res) => {
   const { bookingId } = req.params;
+  
+  console.log(`[SETTLE] Starting Settlement for ID: ${bookingId}`);
+
   try {
-    await prisma.booking.update({
-      where: { id: parseInt(bookingId) },
-      data: { 
-        isSettled: true,
-        settledAt: new Date(),
-        bookingStatus: 'COMPLETED' // Optional: Mark whole booking done
+    await prisma.$transaction(async (tx) => {
+      // A. Mark as Settled & Fetch Updated Data
+      const booking = await tx.booking.update({
+        where: { id: parseInt(bookingId) },
+        data: { 
+          isSettled: true,
+          settledAt: new Date(),
+          bookingStatus: 'COMPLETED' 
+        },
+        include: { supplierCosts: true } // Need costs to calc final profit
+      });
+
+      // B. COMMISSION LOGIC: Balancing Payment
+      const totalRevenue = booking.revenue || 0;
+      const totalCost = booking.supplierCosts.reduce((sum, c) => sum + (c.amount || 0), 0);
+      const finalProfit = totalRevenue - totalCost;
+
+      // Find what was already paid
+      const previousEntries = await tx.commissionLedger.findMany({ where: { bookingId: parseInt(bookingId) } });
+      const paidSoFar = previousEntries.reduce((sum, entry) => sum + entry.amount, 0);
+
+      const balancingAmount = finalProfit - paidSoFar;
+
+      console.log(`[SETTLE] Profit: ${finalProfit} | Paid: ${paidSoFar} | Balancing: ${balancingAmount}`);
+
+      // Only record if there is a difference (avoid £0.00 entries)
+      if (Math.abs(balancingAmount) > 0.01) {
+         // --- THE FIX IS HERE --- 
+         // We pass 'booking' (the object), NOT 'booking.id'
+         await recordCommission(tx, booking, 'FINAL_BALANCING', balancingAmount, finalProfit);
       }
     });
+
     res.status(200).json({ success: true, message: 'Booking Settled & Closed' });
   } catch (error) {
+    console.error("Settle Error:", error);
     res.status(500).json({ success: false, message: 'Failed to settle' });
   }
 };
@@ -235,19 +275,21 @@ exports.addSupplierPayment = async (req, res) => {
 
 exports.updateLiveBooking = async (req, res) => {
   const { id } = req.params;
-  
-  // EXTRACT EVERYTHING: Added initialPayments here!
   const { revenue, transFee, surcharge, supplierCosts, travelDate, instalments, initialPayments } = req.body;
+
+  console.log(`[UPDATE] Starting Financial Update for ID: ${id}`); // <--- LOOK FOR THIS LOG
 
   try {
     await prisma.$transaction(async (tx) => {
       
-      // 1. Calculate New Costs & Profit
+      // 1. Calculate New Profit
       const newProdCost = supplierCosts.reduce((sum, c) => sum + parseFloat(c.amount || 0), 0);
       const newProfit = parseFloat(revenue) - (newProdCost + parseFloat(transFee || 0) + parseFloat(surcharge || 0));
 
-      // 2. Update Main Booking
-      await tx.booking.update({
+      console.log(`[UPDATE] Calculated Profit: ${newProfit}`); // <--- CHECK THIS VALUE
+
+      // 2. Update Booking
+      const updatedBooking = await tx.booking.update({
         where: { id: parseInt(id) },
         data: {
           revenue: parseFloat(revenue),
@@ -259,68 +301,56 @@ exports.updateLiveBooking = async (req, res) => {
         }
       });
 
-      // 3. Update/Create Supplier Costs
+      // 3. Update Supplier Costs
       for (let cost of supplierCosts) {
         if (cost.id) {
-          await tx.supplierCostItem.update({
-            where: { id: parseInt(cost.id) },
-            data: { supplier: cost.supplier, category: cost.category, amount: parseFloat(cost.amount) }
-          });
+          await tx.supplierCostItem.update({ where: { id: parseInt(cost.id) }, data: { supplier: cost.supplier, category: cost.category, amount: parseFloat(cost.amount) } });
         } else {
-          await tx.supplierCostItem.create({
-            data: { bookingId: parseInt(id), supplier: cost.supplier, category: cost.category, amount: parseFloat(cost.amount) }
-          });
+          await tx.supplierCostItem.create({ data: { bookingId: parseInt(id), supplier: cost.supplier, category: cost.category, amount: parseFloat(cost.amount) } });
         }
       }
 
-      // 4. Update/Create Instalments (The Plan)
+      // 4. Update Instalments
       if (instalments) {
         for (let inst of instalments) {
           if (inst.id) {
-            await tx.instalment.update({
-              where: { id: parseInt(inst.id) },
-              data: { dueDate: new Date(inst.dueDate), amount: parseFloat(inst.amount) }
-            });
+            await tx.instalment.update({ where: { id: parseInt(inst.id) }, data: { dueDate: new Date(inst.dueDate), amount: parseFloat(inst.amount) } });
           } else {
-            await tx.instalment.create({
-              data: {
-                bookingId: parseInt(id), dueDate: new Date(inst.dueDate),
-                amount: parseFloat(inst.amount), paidAmount: 0,
-                type: 'INSTALMENT', status: 'PENDING'
-              }
-            });
+            await tx.instalment.create({ data: { bookingId: parseInt(id), dueDate: new Date(inst.dueDate), amount: parseFloat(inst.amount), paidAmount: 0, type: 'INSTALMENT', status: 'PENDING' } });
           }
         }
       }
 
-      // 5. NEW: Update/Create Initial Payments (Deposits)
+      // 5. Update Initial Payments
       if (initialPayments) {
         for (let ip of initialPayments) {
           if (ip.id) {
-            await tx.initialPayment.update({
-              where: { id: parseInt(ip.id) },
-              data: { 
-                amount: parseFloat(ip.amount), 
-                transactionMethod: ip.transactionMethod, 
-                paymentDate: new Date(ip.paymentDate) 
-              }
-            });
+            await tx.initialPayment.update({ where: { id: parseInt(ip.id) }, data: { amount: parseFloat(ip.amount), transactionMethod: ip.transactionMethod, paymentDate: new Date(ip.paymentDate) } });
           } else {
-            await tx.initialPayment.create({
-              data: {
-                bookingId: parseInt(id),
-                amount: parseFloat(ip.amount),
-                transactionMethod: ip.transactionMethod,
-                paymentDate: new Date(ip.paymentDate)
-              }
-            });
+            await tx.initialPayment.create({ data: { bookingId: parseInt(id), amount: parseFloat(ip.amount), transactionMethod: ip.transactionMethod, paymentDate: new Date(ip.paymentDate) } });
           }
         }
+      }
+
+      // --- 6. COMMISSION LOGIC (DAC ONLY) ---
+      console.log(`[UPDATE] Checking Commission Logic. Type: ${updatedBooking.bookingType}`);
+
+      if (updatedBooking.bookingType === 'DATE_CHANGE' && newProfit > 0) {
+          console.log(`[UPDATE] ✅ Date Change Commission Triggered!`);
+          
+          const isFull = updatedBooking.paymentMethod !== 'INTERNAL';
+          const amount = isFull ? newProfit : (newProfit * 0.5); 
+          const type = isFull ? 'FULL_100' : 'INITIAL_50';
+          
+          await recordCommission(tx, updatedBooking, type, amount, newProfit);
+      } else {
+          console.log(`[UPDATE] Skipping Commission. (Profit <= 0 or Not Date Change)`);
       }
 
     });
 
-    res.status(200).json({ success: true, message: 'Live Booking Financials Updated' });
+    // NOTE: The message changed here!
+    res.status(200).json({ success: true, message: 'Live Booking Financials Updated & Commission Checked' });
   } catch (error) {
     console.error("Live Update Error:", error);
     res.status(500).json({ success: false, message: 'Failed to update live booking' });
@@ -330,7 +360,7 @@ exports.updateLiveBooking = async (req, res) => {
 
 exports.createDateChange = async (req, res) => {
   const { id } = req.params;
-  const userId = req.user.userId;
+  const userId = req.user.userId; // The logged-in user making the change
 
   try {
     const parent = await prisma.booking.findUnique({
@@ -340,37 +370,54 @@ exports.createDateChange = async (req, res) => {
 
     if (!parent) return res.status(404).json({ success: false, message: "Parent not found" });
 
-    // Generate new Folder No (e.g., if parent is "1" and has 1 amendment, this becomes "1.2")
+    // Generate new Folder No (e.g. 1.1, 1.2)
     const nextAmendmentNo = parent.amendments.length + 1;
     const newFolderNo = `${parent.folderNo}.${nextAmendmentNo}`;
 
     const dateChangeBooking = await prisma.booking.create({
       data: {
         folderNo: newFolderNo,
-        parentId: parent.id, // Links to original booking
         
-        // Copy Static Info
-        refNo: parent.refNo, paxName: parent.paxName, agentName: parent.agentName,
-        teamName: parent.teamName, numPax: parent.numPax, pnr: parent.pnr,
-        airline: parent.airline, fromTo: parent.fromTo, paymentMethod: parent.paymentMethod,
+        // --- THE FIX: Use connect for the parent booking ---
+        parent: { connect: { id: parseInt(id) } }, 
         
-        // Date Change Specifics
+        refNo: parent.refNo, 
+        paxName: parent.paxName, 
+        agentName: parent.agentName,
+        teamName: parent.teamName, 
+        numPax: parent.numPax, 
+        pnr: parent.pnr,
+        airline: parent.airline, 
+        fromTo: parent.fromTo, 
+        paymentMethod: parent.paymentMethod,
+        
         bookingType: 'DATE_CHANGE', 
         bookingStatus: 'CONFIRMED',
         pcDate: new Date(), 
-        travelDate: parent.travelDate, // Copied, but will be edited in the UI
+        travelDate: parent.travelDate, 
         
-        // Reset Financials to 0 (New Ledger)
-        revenue: 0, prodCost: 0, transFee: 0, surcharge: 0, profit: 0, balance: 0,
+        revenue: 0, 
+        prodCost: 0, 
+        transFee: 0, 
+        surcharge: 0, 
+        profit: 0, 
+        balance: 0,
         
-        approvedById: userId,
+        // Already fixed these in the previous step
+        approvedBy: { connect: { id: userId } },
+        createdBy: { connect: { id: userId } }, 
 
-        // Clone Passengers
         passengers: {
           create: parent.passengers.map(p => ({
-            title: p.title, firstName: p.firstName, lastName: p.lastName,
-            gender: p.gender, category: p.category, birthday: p.birthday,
-            contactNo: p.contactNo
+            title: p.title, 
+            firstName: p.firstName, 
+            lastName: p.lastName,
+            gender: p.gender, 
+            category: p.category, 
+            birthday: p.birthday,
+            email: p.email, 
+            contactNo: p.contactNo, 
+            nationality: p.nationality
           }))
         }
       }
@@ -379,94 +426,136 @@ exports.createDateChange = async (req, res) => {
     res.status(200).json({ success: true, message: "Date Change Created", data: dateChangeBooking });
   } catch (error) {
     console.error("Date Change Error", error);
-    res.status(500).json({ success: false, message: "Failed to create Date Change" });
+    // Return the actual error message so you can see it in the frontend
+    res.status(500).json({ success: false, message: "Failed to create Date Change", error: error.message });
   }
 };
 
 exports.cancelBooking = async (req, res) => {
   const { id } = req.params;
+  const userId = req.user.userId; // The logged-in user
+
   try {
-    const parent = await prisma.booking.findUnique({ where: { id: parseInt(id) }, include: { passengers: true } });
+    const parent = await prisma.booking.findUnique({ 
+      where: { id: parseInt(id) }, 
+      include: { passengers: true } 
+    });
+
     if (!parent) return res.status(404).json({ success: false, message: "Booking not found" });
 
     await prisma.$transaction(async (tx) => {
-      // Lock ALL existing versions in this family
+      // 1. Lock Family
       await tx.booking.updateMany({
         where: { OR: [{ id: parent.id }, { parentId: parent.id }] },
         data: { isLocked: true }
       });
 
-      // Create 1.c (The Cancellation Ledger)
+      // 2. Create Cancellation Folder
       await tx.booking.create({
         data: {
           folderNo: `${parent.folderNo}.c`,
-          parentId: parent.id,
+          parent: { connect: { id: parent.id } }, // Connect Parent
+          
           bookingType: 'CANCELLATION',
           bookingStatus: 'CANCELLED',
+          
           refNo: parent.refNo, paxName: parent.paxName, agentName: parent.agentName,
           teamName: parent.teamName, numPax: parent.numPax, pnr: parent.pnr,
           airline: parent.airline, fromTo: parent.fromTo, paymentMethod: parent.paymentMethod,
+          
           pcDate: new Date(), travelDate: parent.travelDate,
-          revenue: 0, prodCost: 0, profit: 0, // Will be set by process math
-          approvedById: req.user.userId,
-          passengers: { create: parent.passengers.map(p => ({ title: p.title, firstName: p.firstName, lastName: p.lastName, gender: p.gender, category: p.category })) }
+          
+          revenue: 0, prodCost: 0, profit: 0, 
+
+          // --- FIX: CONNECT BOTH USERS ---
+          approvedBy: { connect: { id: userId } },
+          createdBy: { connect: { id: userId } }, // <--- MANDATORY NOW
+
+          passengers: { 
+            create: parent.passengers.map(p => ({ 
+              title: p.title, firstName: p.firstName, lastName: p.lastName, 
+              gender: p.gender, category: p.category 
+            })) 
+          }
         }
       });
     });
 
     res.status(200).json({ success: true, message: "Booking Cancelled. 1.c generated." });
-  } catch (error) { res.status(500).json({ success: false, message: "Failed to cancel" }); }
+  } catch (error) { 
+    console.error("Cancel Error:", error); 
+    res.status(500).json({ success: false, message: "Failed to cancel", error: error.message }); 
+  }
 };
 
 exports.processCancellation = async (req, res) => {
-  const { id } = req.params; // 1.c booking ID
+  const { id } = req.params; 
   const { supplierRefund, consultantFee, supplierName, supplierReference } = req.body;
 
   try {
     await prisma.$transaction(async (tx) => {
       const refund = parseFloat(supplierRefund || 0);
       const fee = parseFloat(consultantFee || 0);
-
-      // The exact formula you requested:
       const paxCreditAmount = Math.max(0, refund - fee);
 
-      // 1. CREATE PAX WALLET
+      // 1. Pax Wallet
       if (paxCreditAmount > 0) {
-        const booking = await tx.booking.findUnique({ where: { id: parseInt(id) }});
+        const b = await tx.booking.findUnique({ where: { id: parseInt(id) }});
         await tx.paxCreditNote.create({
           data: {
             bookingId: parseInt(id),
-            paxName: booking.paxName,
+            paxName: b.paxName,
             originalAmount: paxCreditAmount,
             remainingAmount: paxCreditAmount
           }
         });
       }
 
-      // 2. CREATE SUPPLIER WALLET (With Reference)
+      // 2. Supplier Wallet
       if (refund > 0) {
         await tx.supplierCreditNote.create({
           data: {
             bookingId: parseInt(id),
             supplier: supplierName || 'OTHER',
-            reference: supplierReference || '', // Saved for your records
+            reference: supplierReference || '',
             originalAmount: refund,
             remainingAmount: refund
           }
         });
       }
 
-      // 3. UPDATE 1.C LEDGER
-      await tx.booking.update({
+      // 3. Update Ledger & Lock
+      const booking = await tx.booking.update({
         where: { id: parseInt(id) },
         data: {
           supplierRefund: refund,
-          consultantFee: fee,
-          revenue: fee, // The consultant fee is your final revenue/profit
+          consultantFee: fee, 
+          revenue: fee, 
           profit: fee,
-          isLocked: true // Lock the folder forever
+          isLocked: true 
+        },
+        include: { 
+            transactions: true, 
+            initialPayments: true, 
+            supplierPayments: true 
         }
       });
+
+      // 4. COMMISSION LOGIC: Clawback
+      const previousEntries = await tx.commissionLedger.findMany({ where: { bookingId: parseInt(id) } });
+      const paidSoFar = previousEntries.reduce((sum, entry) => sum + entry.amount, 0);
+
+      // In cancellation, Profit = Consultant Fee
+      const actualOutcome = fee; 
+      const clawback = actualOutcome - paidSoFar;
+
+      console.log(`[CANCEL] Outcome: ${actualOutcome} | Paid: ${paidSoFar} | Clawback: ${clawback}`);
+
+      if (Math.abs(clawback) > 0.01) {
+        // --- THE FIX IS HERE ---
+        // Pass 'booking' (the object), NOT 'booking.id'
+        await recordCommission(tx, booking, 'CLAWBACK', clawback, actualOutcome);
+      }
     });
 
     res.status(200).json({ success: true, message: "Cancellation Processed" });
@@ -535,4 +624,36 @@ exports.refundPaxCreditToBank = async (req, res) => {
     });
     res.json({ success: true, message: "Refund to Bank Processed" });
   } catch(err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.getMonthlyCommissions = async (req, res) => {
+  const { month } = req.query; // This is "2026-02" from the frontend
+
+  try {
+    const commissions = await prisma.commissionLedger.findMany({
+      where: { 
+        month: {
+          startsWith: month // This matches "2026-01-20..." when searching "2026-01"
+        }
+      },
+      orderBy: { folderNo: 'asc' }
+    });
+
+    res.json({ success: true, data: commissions });
+  } catch (err) { 
+    res.status(500).json({ success: false, message: err.message }); 
+  }
+};
+
+// TOGGLE PAID STATUS
+exports.toggleCommissionPaid = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const entry = await prisma.commissionLedger.findUnique({ where: { id: parseInt(id) } });
+    await prisma.commissionLedger.update({
+      where: { id: parseInt(id) },
+      data: { isPaid: !entry.isPaid }
+    });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ success: false }); }
 };

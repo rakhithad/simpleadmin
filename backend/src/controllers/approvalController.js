@@ -3,13 +3,14 @@ const approvalService = require('../services/approvalService');
 exports.approve = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.userId; // From Auth Middleware
+    const userId = req.user.userId; 
     
+    // Call the SERVICE, not the prisma logic directly
     const result = await approvalService.approveBooking(id, userId);
     
     res.status(200).json({ success: true, message: `Booking Approved! Folder No: ${result.folderNo}`, data: result });
   } catch (error) {
-    console.error(error);
+    console.error("Approval Controller Error:", error);
     res.status(500).json({ success: false, message: 'Approval failed', error: error.message });
   }
 };

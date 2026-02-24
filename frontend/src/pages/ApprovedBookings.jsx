@@ -365,7 +365,7 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
   const searchSupplierWallet = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await axios.get(`http://localhost:5000/api/credits/supplier/search?folder=${searchSuppFolder}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.get(`http://localhost:5000/api/bookings/credits/supplier/search?folder=${searchSuppFolder}`, { headers: { Authorization: `Bearer ${token}` } });
       if (res.data.success) {
          setFoundSuppWallet(res.data.data);
       } else { 

@@ -34,7 +34,6 @@ exports.createBookingTransaction = async (data, userId) => {
   return await prisma.$transaction(async (tx) => {
     return await tx.pendingBooking.create({
       data: {
-        // ... (All your standard string fields remain the same) ...
         refNo: data.refNo, paxName: data.paxName, agentName: data.agentName, teamName: data.teamName,
         numPax: parseInt(data.numPax), pnr: data.pnr, airline: data.airline, fromTo: data.fromTo,
         bookingType: data.bookingType, bookingStatus: 'PENDING', description: data.description,
@@ -44,7 +43,7 @@ exports.createBookingTransaction = async (data, userId) => {
         // FINANCIALS
         paymentMethod: data.paymentMethod,
         revenue: revenue,
-        prodCost: calculatedProdCost, // <--- SAVING THE AUTO-CALCULATED TOTAL
+        prodCost: calculatedProdCost, 
         transFee: transFee,
         surcharge: surcharge,
         profit: profit,

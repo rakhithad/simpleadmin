@@ -1,22 +1,48 @@
 const prisma = require('../config/db');
 
-// Helper to generate the next Folder Number
+// --- HELPER: Record Commission Logic ---
+// This writes to the ledger immediately after approval
+const recordCommission = async (tx, booking, type, amount, profit, monthOverride = null) => {
+  const date = new Date();
+  // Force "YYYY-MM" format so the search works
+  const monthString = monthOverride || `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+  
+  console.log(`[COMMISSION] 🟢 WRITING LEDGER: Agent=${booking.agentName} | Amount=${amount} | Month=${monthString}`);
+
+  await tx.commissionLedger.create({
+    data: {
+      bookingId: booking.id,
+      folderNo: booking.folderNo,
+      agentName: booking.agentName, // Using the String name
+      reference: booking.refNo,
+      type,
+      amount,
+      snapshotProfit: profit,
+      month: monthString
+    }
+  });
+};
+
+// --- HELPER: Generate Next Folder Number ---
 async function generateNextFolderNo(tx) {
-  // Simple logic: Count existing bookings and add 1.
-  // In a high-traffic app, we'd use a more robust counter, but this works for now.
-  const count = await tx.booking.count();
-  return (count + 1).toString();
+  // Count only PARENT bookings (ignore .1, .2, .c)
+  const count = await tx.booking.count({
+    where: { parentId: null }
+  });
+  // Format as FN-0001, FN-0002, etc.
+  return `FN-${(count + 1).toString().padStart(4, '0')}`;
 }
 
+// --- MAIN: Approve Booking ---
 exports.approveBooking = async (pendingId, approverUserId) => {
   return await prisma.$transaction(async (tx) => {
     
-    // 1. Fetch Pending Data (including all children)
+    // 1. Fetch Pending Data
     const pending = await tx.pendingBooking.findUnique({
       where: { id: parseInt(pendingId) },
       include: { 
         passengers: true, 
-        pendingInitialPayments: true, // Note the correct name
+        pendingInitialPayments: true, 
         instalments: true,
         supplierCosts: true
       }
@@ -24,7 +50,7 @@ exports.approveBooking = async (pendingId, approverUserId) => {
 
     if (!pending) throw new Error("Pending booking not found");
 
-    // 2. Generate new Folder Number
+    // 2. Generate new Folder Number (Correct Logic)
     const newFolderNo = await generateNextFolderNo(tx);
 
     // 3. Create Live Booking
@@ -36,7 +62,7 @@ exports.approveBooking = async (pendingId, approverUserId) => {
         refNo: pending.refNo, paxName: pending.paxName, agentName: pending.agentName,
         teamName: pending.teamName, numPax: pending.numPax, pnr: pending.pnr,
         airline: pending.airline, fromTo: pending.fromTo, bookingType: pending.bookingType,
-        bookingStatus: 'CONFIRMED',
+        bookingStatus: 'CONFIRMED', // Set to Confirmed
         
         pcDate: pending.pcDate, travelDate: pending.travelDate,
         paymentMethod: pending.paymentMethod,
@@ -46,6 +72,7 @@ exports.approveBooking = async (pendingId, approverUserId) => {
         description: pending.description,
         
         approvedById: approverUserId,
+        createdById: pending.createdById, // Keep original creator
 
         // Copy Children
         passengers: {
@@ -63,9 +90,9 @@ exports.approveBooking = async (pendingId, approverUserId) => {
         instalments: {
           create: pending.instalments.map(i => ({
             dueDate: i.dueDate,
-            amount: i.amount,       // Expected Amount
-            paidAmount: 0,          // Q2: Starts at 0
-            type: 'INSTALMENT',     // Q2: Default type
+            amount: i.amount,
+            paidAmount: 0,
+            type: 'INSTALMENT',
             status: 'PENDING'
           }))
         },
@@ -77,7 +104,24 @@ exports.approveBooking = async (pendingId, approverUserId) => {
       }
     });
 
-    // 4. Hard Delete Pending (Q3)
+    // --- 4. COMMISSION LOGIC (THE MISSING PIECE) ---
+    const estProfit = liveBooking.profit || 0;
+    
+    if (estProfit > 0) {
+       console.log(`[APPROVAL] Calculating Commission for Profit: ${estProfit}`);
+       const isFull = liveBooking.paymentMethod !== 'INTERNAL';
+       
+       // 100% for Full, 50% for Internal
+       const amount = isFull ? estProfit : (estProfit * 0.5); 
+       const type = isFull ? 'FULL_100' : 'INITIAL_50';
+       
+       // Call the helper defined at the top
+       await recordCommission(tx, liveBooking, type, amount, estProfit);
+    } else {
+       console.log("[APPROVAL] Skipping Commission (Profit <= 0)");
+    }
+
+    // 5. Hard Delete Pending
     await tx.pendingBooking.delete({
       where: { id: parseInt(pendingId) }
     });
@@ -86,8 +130,8 @@ exports.approveBooking = async (pendingId, approverUserId) => {
   });
 };
 
+// --- MAIN: Reject Booking ---
 exports.rejectBooking = async (pendingId) => {
-  // Q3: Hard Delete on Reject
   return await prisma.pendingBooking.delete({
     where: { id: parseInt(pendingId) }
   });

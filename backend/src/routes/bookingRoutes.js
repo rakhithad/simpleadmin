@@ -30,6 +30,8 @@ router.get('/credits/pax/search', authMiddleware, bookingController.searchPaxCre
 router.get('/credits/supplier/search', authMiddleware, bookingController.searchSupplierCredit);
 router.post('/credits/pax/:id/refund', authMiddleware, bookingController.refundPaxCreditToBank);
 
+router.get('/commissions', authMiddleware, bookingController.getMonthlyCommissions);
+router.put('/commissions/:id/toggle', authMiddleware, bookingController.toggleCommissionPaid);
 
 
 module.exports = router;

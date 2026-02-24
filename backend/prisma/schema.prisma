@@ -20,6 +20,7 @@ model User {
 
   pendingBookings PendingBooking[]
   approvedBookings Booking[]
+  createdBookings  Booking[] @relation("CreatedBookings")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -236,6 +237,7 @@ model Booking {
   supplierCosts     SupplierCostItem[]
   supplierPayments  SupplierPayment[]
 
+
   isLocked           Boolean   @default(false) @map("is_locked")
 
   isSettled         Boolean      @default(false) @map("is_settled")
@@ -251,6 +253,10 @@ model Booking {
 
   paxCreditNotes     PaxCreditNote[]
   supplierCreditNotes SupplierCreditNote[]
+  commissionLedger CommissionLedger[]
+
+  createdById       String          @map("created_by_id")
+  createdBy         User            @relation("CreatedBookings", fields: [createdById], references: [id])
 
   @@map("bookings")
 }
@@ -408,5 +414,26 @@ model SupplierCreditNote {
   @@map("supplier_credit_notes")
 }
 
+
+model CommissionLedger {
+  id          Int      @id @default(autoincrement())
+  bookingId   Int      @map("booking_id")
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  folderNo    String   @map("folder_no")
+  
+  // WE WANT THESE EXACT NAMES:
+  agentName   String   @map("agent_name") 
+  month       String   // No @map needed, default is "month"
+  
+  reference   String?  
+  type        String   
+  amount      Float    
+  snapshotProfit Float @map("snapshot_profit")
+  isPaid      Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("commission_ledger")
+}
 
 
