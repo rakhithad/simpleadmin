@@ -30,7 +30,7 @@ export default function Login() {
         localStorage.setItem('user', JSON.stringify(response.data.user));
 
         // 3. Go Inside!
-        navigate('/dashboard');
+        navigate('/bookings');
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Login failed. Check server.');

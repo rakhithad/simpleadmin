@@ -6,18 +6,25 @@ const recordCommission = async (tx, booking, type, amount, profit) => {
   const date = new Date();
   const monthString = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
   
-  // 1. Check if we already paid this!
+  // Check if we already have an entry for this specific booking & type
   const existing = await tx.commissionLedger.findFirst({
     where: { bookingId: booking.id, type: type }
   });
 
   if (existing) {
-    console.log(`[COMMISSION] ⚠️ ALREADY EXISTS: Skipping duplicate payment for ${booking.folderNo}`);
+    // UPSERT LOGIC: If amount is different, update it.
+    if (Math.abs(existing.amount - amount) > 0.01) {
+       console.log(`[COMMISSION] 🔄 UPDATING: ${booking.folderNo} | ${existing.amount} -> ${amount}`);
+       await tx.commissionLedger.update({
+         where: { id: existing.id },
+         data: { amount: amount, snapshotProfit: profit }
+       });
+    }
     return;
   }
 
-  // 2. Create the Entry
-  console.log(`[COMMISSION] 🟢 WRITING LEDGER: Agent=${booking.agentName} | Amount=${amount} | Month=${monthString}`);
+  // CREATE NEW
+  console.log(`[COMMISSION] 🟢 CREATING: ${booking.folderNo} | Amount: ${amount}`);
   await tx.commissionLedger.create({
     data: {
       bookingId: booking.id,
@@ -31,6 +38,23 @@ const recordCommission = async (tx, booking, type, amount, profit) => {
     }
   });
 };
+
+const calculateRealProfit = (booking, supplierRefund = 0) => {
+  // 1. Total Money IN (Pax)
+  // We sum Initial Payments + Transactions (Instalments)
+  const totalInitial = booking.initialPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+  const totalInstalmentPaid = booking.instalments.reduce((sum, i) => sum + (i.paidAmount || 0), 0);
+  const totalPaxPaid = totalInitial + totalInstalmentPaid;
+
+  // 2. Net Cost (Supplier)
+  // We sum Supplier Costs - Any Refunds received
+  const totalSupplierCost = booking.supplierCosts.reduce((sum, c) => sum + (c.amount || 0), 0);
+  const netCost = totalSupplierCost - supplierRefund;
+
+  // 3. Real Profit (The "Bucket")
+  return totalPaxPaid - netCost;
+};
+
 
 exports.createBooking = async (req, res) => {
   try {
@@ -433,8 +457,7 @@ exports.createDateChange = async (req, res) => {
 
 exports.cancelBooking = async (req, res) => {
   const { id } = req.params;
-  const userId = req.user.userId; // The logged-in user
-
+  const userId = req.user.userId; 
   try {
     const parent = await prisma.booking.findUnique({ 
       where: { id: parseInt(id) }, 
@@ -454,7 +477,7 @@ exports.cancelBooking = async (req, res) => {
       await tx.booking.create({
         data: {
           folderNo: `${parent.folderNo}.c`,
-          parent: { connect: { id: parent.id } }, // Connect Parent
+          parent: { connect: { id: parent.id } },
           
           bookingType: 'CANCELLATION',
           bookingStatus: 'CANCELLED',
@@ -467,9 +490,8 @@ exports.cancelBooking = async (req, res) => {
           
           revenue: 0, prodCost: 0, profit: 0, 
 
-          // --- FIX: CONNECT BOTH USERS ---
           approvedBy: { connect: { id: userId } },
-          createdBy: { connect: { id: userId } }, // <--- MANDATORY NOW
+          createdBy: { connect: { id: userId } }, 
 
           passengers: { 
             create: parent.passengers.map(p => ({ 
@@ -490,75 +512,77 @@ exports.cancelBooking = async (req, res) => {
 
 exports.processCancellation = async (req, res) => {
   const { id } = req.params; 
-  const { supplierRefund, consultantFee, supplierName, supplierReference } = req.body;
+  // We rely on supplierRefund for the math, 
+  // but we IGNORE 'consultantFee' input because we CALCULATE it now.
+  const { supplierRefund, supplierName, supplierReference } = req.body;
 
   try {
     await prisma.$transaction(async (tx) => {
-      const refund = parseFloat(supplierRefund || 0);
-      const fee = parseFloat(consultantFee || 0);
-      const paxCreditAmount = Math.max(0, refund - fee);
-
-      // 1. Pax Wallet
-      if (paxCreditAmount > 0) {
-        const b = await tx.booking.findUnique({ where: { id: parseInt(id) }});
-        await tx.paxCreditNote.create({
-          data: {
-            bookingId: parseInt(id),
-            paxName: b.paxName,
-            originalAmount: paxCreditAmount,
-            remainingAmount: paxCreditAmount
+      // 1. Fetch Booking + Parent + Financials
+      const booking = await tx.booking.findUnique({ 
+          where: { id: parseInt(id) },
+          include: { 
+            parent: true,
+            initialPayments: true,
+            instalments: true,
+            supplierCosts: true
           }
-        });
-      }
+      });
 
-      // 2. Supplier Wallet
-      if (refund > 0) {
-        await tx.supplierCreditNote.create({
-          data: {
-            bookingId: parseInt(id),
-            supplier: supplierName || 'OTHER',
-            reference: supplierReference || '',
-            originalAmount: refund,
-            remainingAmount: refund
-          }
-        });
-      }
+      // 2. Calculate REAL PROFIT using the Golden Formula
+      const refundAmount = parseFloat(supplierRefund || 0);
+      const realProfit = calculateRealProfit(booking, refundAmount);
 
-      // 3. Update Ledger & Lock
-      const booking = await tx.booking.update({
-        where: { id: parseInt(id) },
+      console.log(`[CANCEL MATH] Pax Paid - (Cost - Refund) = Real Profit`);
+      console.log(`[CANCEL MATH] Result: ${realProfit}`);
+
+      // 3. Find TOTAL Commission already paid to this family (Original + Date Changes)
+      const familyIds = [booking.id];
+      if (booking.parentId) familyIds.push(booking.parentId);
+
+      const previousEntries = await tx.commissionLedger.findMany({ 
+        where: { bookingId: { in: familyIds } } 
+      });
+
+      const alreadyPaid = previousEntries.reduce((sum, entry) => sum + entry.amount, 0);
+
+      // 4. THE ADJUSTMENT (Scenario 1.1 Logic)
+      // Example 1.1: RealProfit (-100) - AlreadyPaid (100) = -200 Adjustment
+      const finalAdjustment = realProfit - alreadyPaid;
+
+      console.log(`[CANCEL COMM] Real Profit (${realProfit}) - Paid (${alreadyPaid}) = Adjust (${finalAdjustment})`);
+
+      // 5. Update the Booking Ledger
+      await tx.booking.update({
+        where: { id: booking.id },
         data: {
-          supplierRefund: refund,
-          consultantFee: fee, 
-          revenue: fee, 
-          profit: fee,
+          supplierRefund: refundAmount,
+          consultantFee: realProfit, // Store the Real Profit here for record
+          profit: realProfit,        // Update the main profit field too
           isLocked: true 
-        },
-        include: { 
-            transactions: true, 
-            initialPayments: true, 
-            supplierPayments: true 
         }
       });
 
-      // 4. COMMISSION LOGIC: Clawback
-      const previousEntries = await tx.commissionLedger.findMany({ where: { bookingId: parseInt(id) } });
-      const paidSoFar = previousEntries.reduce((sum, entry) => sum + entry.amount, 0);
+      // 6. Record the Commission Entry (If difference exists)
+      if (Math.abs(finalAdjustment) > 0.01) {
+        await recordCommission(tx, booking, 'CANCELLATION_ADJUSTMENT', finalAdjustment, realProfit);
+      }
 
-      // In cancellation, Profit = Consultant Fee
-      const actualOutcome = fee; 
-      const clawback = actualOutcome - paidSoFar;
-
-      console.log(`[CANCEL] Outcome: ${actualOutcome} | Paid: ${paidSoFar} | Clawback: ${clawback}`);
-
-      if (Math.abs(clawback) > 0.01) {
-        // --- THE FIX IS HERE ---
-        // Pass 'booking' (the object), NOT 'booking.id'
-        await recordCommission(tx, booking, 'CLAWBACK', clawback, actualOutcome);
+      // 7. (Optional) Create Supplier Credit Note if refund > 0
+      if (refundAmount > 0) {
+        await tx.supplierCreditNote.create({
+          data: {
+            bookingId: booking.id,
+            supplier: supplierName || 'OTHER',
+            reference: supplierReference,
+            originalAmount: refundAmount,
+            remainingAmount: refundAmount
+          }
+        });
       }
     });
 
-    res.status(200).json({ success: true, message: "Cancellation Processed" });
+    res.status(200).json({ success: true, message: "Cancellation Processed & Commission Balanced" });
   } catch (error) { 
     console.error("Cancel Error:", error);
     res.status(500).json({ success: false, message: "Processing failed" }); 
@@ -627,20 +651,38 @@ exports.refundPaxCreditToBank = async (req, res) => {
 };
 
 exports.getMonthlyCommissions = async (req, res) => {
-  const { month } = req.query; // This is "2026-02" from the frontend
+  const { month } = req.query; 
 
   try {
     const commissions = await prisma.commissionLedger.findMany({
       where: { 
-        month: {
-          startsWith: month // This matches "2026-01-20..." when searching "2026-01"
+        month: { startsWith: month }
+      },
+      include: {
+        booking: {
+          select: {
+            revenue: true,
+            prodCost: true,
+            paymentMethod: true, 
+            bookingType: true, 
+            supplierRefund: true 
+          }
         }
       },
       orderBy: { folderNo: 'asc' }
     });
 
-    res.json({ success: true, data: commissions });
+    const formatted = commissions.map(c => ({
+      ...c,
+      revenue: c.booking?.revenue || 0,
+      prodCost: c.booking?.prodCost || 0,
+      paymentMethod: c.booking?.paymentMethod || 'FULL', // <--- MAP IT HERE
+      bookingType: c.booking?.bookingType || 'FRESH'
+    }));
+
+    res.json({ success: true, data: formatted });
   } catch (err) { 
+    console.error("Commission Fetch Error:", err);
     res.status(500).json({ success: false, message: err.message }); 
   }
 };

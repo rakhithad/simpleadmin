@@ -72,7 +72,7 @@ exports.approveBooking = async (pendingId, approverUserId) => {
         description: pending.description,
         
         approvedById: approverUserId,
-        createdById: pending.createdById, // Keep original creator
+        createdById: pending.createdById, 
 
         // Copy Children
         passengers: {
