@@ -61,9 +61,11 @@ export default function Navbar() {
             <NavLink to="/commissions" className={getLinkClass}>
               Commissions
             </NavLink>
+            <NavLink to="/users" className={getLinkClass}>
+              Users
+            </NavLink>
           </div>
 
-          {/* --- RIGHT: LOGOUT (Flex-1 to balance layout) --- */}
           <div className="flex-1 flex justify-end">
             <button 
               onClick={handleLogout} 

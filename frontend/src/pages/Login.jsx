@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios'; // Ensure axios is installed
+import axios from 'axios';
 import Button from "../components/Button";
 
 export default function Login() {
@@ -9,27 +9,20 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Handle typing
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.type]: e.target.value });
   };
 
-  // Handle Submit
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
     try {
-      // 1. Call your Backend
       const response = await axios.post('http://localhost:5000/api/auth/login', formData);
-
       if (response.data.success) {
-        // 2. Save the "Passport" (Token)
         localStorage.setItem('token', response.data.token);
         localStorage.setItem('user', JSON.stringify(response.data.user));
-
-        // 3. Go Inside!
         navigate('/bookings');
       }
     } catch (err) {
@@ -40,47 +33,68 @@ export default function Login() {
   };
 
   return (
-    
-    <div className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
-      <div className="w-full max-w-md bg-white rounded-xl shadow-lg p-8">
-        <h2 className="text-3xl font-extrabold text-slate-900 text-center mb-6">System Login</h2>
+    <div className="flex min-h-screen items-center justify-center bg-[conic-gradient(at_top_right,_var(--tw-gradient-stops))] from-blue-50 via-slate-50 to-indigo-50 p-6">
+      
+      {/* GLASS CARD */}
+      <div className="w-full max-w-md bg-white/70 backdrop-blur-xl rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.08)] border border-white/50 p-10 animate-fade-in">
+        
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-blue-600 rounded-2xl mx-auto flex items-center justify-center shadow-lg shadow-blue-500/30 mb-4 text-3xl">
+            ✈️
+          </div>
+          <h2 className="text-2xl font-extrabold text-slate-800 tracking-tight">Welcome Back</h2>
+          <p className="text-slate-400 text-sm mt-1">Sign in to access your dashboard</p>
+        </div>
         
         {error && (
-          <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-md text-sm border border-red-200">
-            {error}
+          <div className="mb-6 p-4 bg-red-50/80 backdrop-blur-sm text-red-600 rounded-xl text-xs font-bold border border-red-100 flex items-center gap-2">
+            <span>⚠️</span> {error}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-sm font-medium text-slate-700">Email</label>
+            <label className="block text-xs font-bold text-slate-400 uppercase mb-1 ml-1">Email Address</label>
             <input 
               type="email" 
               value={formData.email}
               onChange={handleChange}
-              className="w-full mt-1 p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none"
-              placeholder="admin@company.com"
+              className="w-full bg-white/50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-slate-700"
+              placeholder="consultant@company.com"
               required 
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700">Password</label>
+            <label className="block text-xs font-bold text-slate-400 uppercase mb-1 ml-1">Password</label>
             <input 
               type="password" 
               value={formData.password}
               onChange={handleChange}
-              className="w-full mt-1 p-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none"
+              className="w-full bg-white/50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-slate-700"
               placeholder="••••••••"
               required
             />
           </div>
 
-          <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? 'Authenticating...' : 'Enter System'}
-          </Button>
+          <button 
+            type="submit" 
+            disabled={loading}
+            className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3.5 rounded-xl shadow-xl shadow-slate-900/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
+          >
+            {loading ? 'Authenticating...' : 'Sign In'}
+          </button>
         </form>
+
+        <div className="mt-8 text-center">
+          <p className="text-xs text-slate-400">Protected System • Authorized Personnel Only</p>
+        </div>
       </div>
+
+      <style>{`
+        .animate-fade-in { animation: fadeIn 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
     </div>
   );
 }
