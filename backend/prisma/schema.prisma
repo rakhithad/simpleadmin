@@ -67,6 +67,7 @@ model PendingBooking {
   paymentMethod     PaymentMethod   @map("payment_method")
   lastPaymentDate   DateTime?       @map("last_payment_date")
   travelDate        DateTime?       @map("travel_date")
+  returnDate        DateTime?       @map("return_date")
   revenue           Float?          @map("revenue")
   prodCost          Float?          @map("prod_cost")
   transFee          Float?          @map("trans_fee")
@@ -214,6 +215,7 @@ model Booking {
   
   pcDate            DateTime        @map("pc_date")
   travelDate        DateTime?       @map("travel_date")
+  returnDate        DateTime?       @map("return_date")
   
   paymentMethod     PaymentMethod   @map("payment_method")
   revenue           Float?          @map("revenue")

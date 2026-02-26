@@ -11,6 +11,7 @@ const formatDate = (dateStr) => {
 
 export default function BookingManager() {
   const [bookings, setBookings] = useState([]);
+  const [consultants, setConsultants] = useState([]);
   const [loading, setLoading] = useState(false);
   const [editModeId, setEditModeId] = useState(null);
 
@@ -19,7 +20,7 @@ export default function BookingManager() {
     paymentMethod: 'FULL',
     refNo: '', agentName: '', teamName: 'PH', 
     pnr: '', airline: '', fromTo: '', bookingType: 'FRESH',
-    pcDate: formatDate(new Date()), travelDate: '', description: '',
+    pcDate: formatDate(new Date()), travelDate: '', returnDate: '', description: '',
     revenue: 0, transFee: 0, surcharge: 0,
     supplierCosts: [], 
     numPax: 1,
@@ -37,6 +38,12 @@ export default function BookingManager() {
   const [newCost, setNewCost] = useState({ supplier: 'BTRES', category: 'FLIGHT', amount: '' });
 
   // --- API CALLS ---
+
+  useEffect(() => { 
+    fetchBookings(); 
+    fetchConsultants();
+  }, []);
+
   const fetchBookings = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -50,6 +57,21 @@ export default function BookingManager() {
   };
 
   useEffect(() => { fetchBookings(); }, []);
+
+  const fetchConsultants = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.get('http://localhost:5000/api/users', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.data.success) {
+        const agents = res.data.data.filter(u => ['CONSULTANT'].includes(u.role));
+        setConsultants(agents);
+        
+        if (agents.length > 0 && !formData.agentName) {
+            setFormData(prev => ({...prev, agentName: `${agents[0].firstName} ${agents[0].lastName}`, teamName: agents[0].team || 'PH'}));
+        }
+      }
+    } catch (err) { console.error("Failed to fetch users", err); }
+  };
 
   // --- REAL-TIME CALCULATIONS ---
   const calculateFinancials = () => {
@@ -137,6 +159,7 @@ export default function BookingManager() {
       ...booking,
       pcDate: formatDate(booking.pcDate),
       travelDate: formatDate(booking.travelDate),
+      returnDate: formatDate(booking.returnDate),
       supplierCosts: booking.supplierCosts || [],
       passengers: booking.passengers && booking.passengers.length > 0 ? [{
         ...booking.passengers[0],
@@ -166,6 +189,19 @@ export default function BookingManager() {
         return;
       }
     }
+
+    if (formData.returnDate && formData.instalments.length > 0) {
+        const returnD = new Date(formData.returnDate).getTime();
+        // Find the highest timestamp among all instalments
+        const lastInstD = Math.max(...formData.instalments.map(i => new Date(i.dueDate).getTime()));
+        
+        if (lastInstD >= returnD) {
+          alert("DATE ERROR:\n\nThe last instalment due date MUST be strictly BEFORE the Return Date. Please adjust your payment plan.");
+          setLoading(false);
+          return;
+        }
+      }
+    
 
     const token = localStorage.getItem('token');
     const paxName = formData.paxName || `${formData.passengers?.[0]?.lastName}/${formData.passengers?.[0]?.firstName}`;
@@ -200,7 +236,7 @@ export default function BookingManager() {
             <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">
               {editModeId ? `Editing Booking #${editModeId}` : 'New Booking Entry'}
             </h1>
-            <p className="text-slate-400 text-sm mt-1 font-medium">Create draft quotes or manage pending files.</p>
+            <p className="text-slate-400 text-sm mt-1 font-medium">Create Folders or manage Folders.</p>
           </div>
           {editModeId && (
             <button onClick={handleCancelEdit} className="text-red-500 hover:text-red-700 font-bold text-sm bg-red-50 px-4 py-2 rounded-lg border border-red-100 transition-colors">
@@ -243,21 +279,34 @@ export default function BookingManager() {
               <div className="col-span-1 md:col-span-2"><label className="label">Airline</label><input name="airline" value={formData.airline} onChange={handleChange} className="input-modern" required /></div>
               
               <div className="col-span-1 md:col-span-1"><label className="label">Route</label><input name="fromTo" value={formData.fromTo} onChange={handleChange} className="input-modern" placeholder="CMB-DXB" required /></div>
-              <div className="col-span-1 md:col-span-1"><label className="label">Agent Name</label><input name="agentName" value={formData.agentName} onChange={handleChange} className="input-modern" /></div>
+              <div className="col-span-1 md:col-span-1">
+                <label className="label">Agent Name</label>
+                <select 
+                  name="agentName" 
+                  value={formData.agentName} 
+                  onChange={(e) => {
+                    const selectedAgent = consultants.find(c => `${c.firstName} ${c.lastName}` === e.target.value);
+                    setFormData({ 
+                      ...formData, 
+                      agentName: e.target.value,
+                      teamName: selectedAgent ? selectedAgent.team : formData.teamName // Auto-update team
+                    });
+                  }} 
+                  className="input-modern"
+                  required
+                >
+                  <option value="" disabled>Select Consultant...</option>
+                  {consultants.map(c => (
+                     <option key={c.id} value={`${c.firstName} ${c.lastName}`}>
+                        {c.firstName} {c.lastName} ({c.team || 'No Team'})
+                     </option>
+                  ))}
+                </select>
+              </div>
               <div className="col-span-1 md:col-span-1"><label className="label">PC Date</label><input type="date" name="pcDate" value={formData.pcDate} onChange={handleChange} className="input-modern" required /></div>
               <div className="col-span-1 md:col-span-1"><label className="label">Travel Date</label><input type="date" name="travelDate" value={formData.travelDate} onChange={handleChange} className="input-modern" required /></div>
+              <div className="col-span-1 md:col-span-1"><label className="label text-blue-500">Return Date</label><input type="date" name="returnDate" value={formData.returnDate} onChange={handleChange} className="input-modern" /></div>
               
-              <div className="col-span-1 md:col-span-4">
-                <label className="label">Booking Type</label>
-                <div className="flex gap-4">
-                  {['FRESH', 'DATE_CHANGE', 'CANCELLATION'].map(type => (
-                    <label key={type} className={`cursor-pointer border rounded-lg px-4 py-2 text-xs font-bold transition-all ${formData.bookingType === type ? 'bg-blue-50 border-blue-200 text-blue-700 ring-1 ring-blue-200' : 'bg-transparent border-slate-200 text-slate-400'}`}>
-                      <input type="radio" name="bookingType" value={type} checked={formData.bookingType === type} onChange={handleChange} className="hidden" />
-                      {type.replace('_', ' ')}
-                    </label>
-                  ))}
-                </div>
-              </div>
             </div>
           </div>
 
