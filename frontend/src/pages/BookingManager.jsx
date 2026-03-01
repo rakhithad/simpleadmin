@@ -3,11 +3,12 @@ import axios from 'axios';
 import Navbar from '../components/Navbar';
 import Button from '../components/Button';
 
-// Utility to format date for Input fields (YYYY-MM-DD)
 const formatDate = (dateStr) => {
   if (!dateStr) return '';
   return new Date(dateStr).toISOString().split('T')[0];
 };
+
+const formatMoney = (m) => `£${parseFloat(m || 0).toFixed(2)}`;
 
 export default function BookingManager() {
   const [bookings, setBookings] = useState([]);
@@ -30,14 +31,12 @@ export default function BookingManager() {
       gender: 'MALE', category: 'ADULT', birthday: '', 
       email: '', contactNo: '', nationality: '' 
     }],
-    initialPayments: [{ amount: 0, transactionMethod: 'CASH', paymentDate: formatDate(new Date()) }],
+    initialPayments: [{ amount: 0, transactionMethod: 'CASH', paymentDate: formatDate(new Date()), creditNoteId: null, _search: '', _wallet: null }],
     instalments: []
   };
 
   const [formData, setFormData] = useState(initialFormState);
   const [newCost, setNewCost] = useState({ supplier: 'BTRES', category: 'FLIGHT', amount: '' });
-
-  // --- API CALLS ---
 
   useEffect(() => { 
     fetchBookings(); 
@@ -47,25 +46,18 @@ export default function BookingManager() {
   const fetchBookings = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await axios.get('http://localhost:5000/api/bookings', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.data.success && Array.isArray(res.data.data)) {
-        setBookings(res.data.data);
-      }
+      const res = await axios.get('http://localhost:5000/api/bookings', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.data.success && Array.isArray(res.data.data)) setBookings(res.data.data);
     } catch (err) { console.error(err); }
   };
-
-  useEffect(() => { fetchBookings(); }, []);
 
   const fetchConsultants = async () => {
     try {
       const token = localStorage.getItem('token');
       const res = await axios.get('http://localhost:5000/api/users', { headers: { Authorization: `Bearer ${token}` } });
       if (res.data.success) {
-        const agents = res.data.data.filter(u => ['CONSULTANT'].includes(u.role));
+        const agents = res.data.data.filter(u => ['CONSULTANT', 'MANAGEMENT', 'ADMIN', 'SUPER_ADMIN'].includes(u.role));
         setConsultants(agents);
-        
         if (agents.length > 0 && !formData.agentName) {
             setFormData(prev => ({...prev, agentName: `${agents[0].firstName} ${agents[0].lastName}`, teamName: agents[0].team || 'PH'}));
         }
@@ -73,7 +65,6 @@ export default function BookingManager() {
     } catch (err) { console.error("Failed to fetch users", err); }
   };
 
-  // --- REAL-TIME CALCULATIONS ---
   const calculateFinancials = () => {
     const rev = parseFloat(formData.revenue || 0);
     const fee = parseFloat(formData.transFee || 0);
@@ -83,16 +74,12 @@ export default function BookingManager() {
     const paid = (formData.initialPayments || []).reduce((acc, curr) => acc + parseFloat(curr.amount || 0), 0);
     const balance = rev - paid;
     const instTotal = (formData.instalments || []).reduce((acc, curr) => acc + parseFloat(curr.amount || 0), 0);
-
     return { profit, balance, instTotal, totalProdCost };
   };
 
   const { profit, balance, instTotal, totalProdCost } = calculateFinancials();
 
-  // --- HANDLERS ---
-  const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-  };
+  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
 
   const handlePaxChange = (field, value) => {
     const updatedPax = [...(formData.passengers || initialFormState.passengers)];
@@ -107,6 +94,14 @@ export default function BookingManager() {
   const handlePaymentChange = (index, field, value) => {
     const newPayments = [...(formData.initialPayments || initialFormState.initialPayments)];
     newPayments[index][field] = value;
+    
+    // If they change away from PAX_CREDIT, clear the wallet data for this specific row
+    if (field === 'transactionMethod' && value !== 'PAX_CREDIT') {
+        newPayments[index].creditNoteId = null;
+        newPayments[index]._wallet = null;
+        newPayments[index]._search = '';
+    }
+
     let newRevenue = formData.revenue;
     if (formData.paymentMethod === 'FULL' && index === 0 && field === 'amount') {
         newRevenue = value;
@@ -116,36 +111,23 @@ export default function BookingManager() {
 
   const addCostItem = () => {
     if (!newCost.amount || parseFloat(newCost.amount) <= 0) return;
-    setFormData({
-      ...formData,
-      supplierCosts: [...(formData.supplierCosts || []), { ...newCost, amount: parseFloat(newCost.amount) }]
-    });
+    setFormData({ ...formData, supplierCosts: [...(formData.supplierCosts || []), { ...newCost, amount: parseFloat(newCost.amount) }] });
     setNewCost({ supplier: 'BTRES', category: 'FLIGHT', amount: '' }); 
   };
-
   const removeCostItem = (index) => {
     const newCosts = (formData.supplierCosts || []).filter((_, i) => i !== index);
     setFormData({ ...formData, supplierCosts: newCosts });
   };
-
-  const addInstalment = () => {
-    setFormData({
-      ...formData,
-      instalments: [...(formData.instalments || []), { dueDate: '', amount: 0, status: 'PENDING' }]
-    });
-  };
-
+  const addInstalment = () => setFormData({ ...formData, instalments: [...(formData.instalments || []), { dueDate: '', amount: 0, status: 'PENDING' }] });
   const removeInstalment = (index) => {
     const newInst = (formData.instalments || []).filter((_, i) => i !== index);
     setFormData({ ...formData, instalments: newInst });
   };
-
   const handleInstalmentChange = (index, field, value) => {
     const newInst = [...(formData.instalments || [])];
     newInst[index][field] = value;
     setFormData({ ...formData, instalments: newInst });
   };
-
   const distributeBalance = () => {
     if (!formData.instalments || formData.instalments.length === 0) return;
     const amountPerInst = (balance / formData.instalments.length).toFixed(2);
@@ -161,12 +143,9 @@ export default function BookingManager() {
       travelDate: formatDate(booking.travelDate),
       returnDate: formatDate(booking.returnDate),
       supplierCosts: booking.supplierCosts || [],
-      passengers: booking.passengers && booking.passengers.length > 0 ? [{
-        ...booking.passengers[0],
-        birthday: formatDate(booking.passengers[0].birthday)
-      }] : initialFormState.passengers,
+      passengers: booking.passengers && booking.passengers.length > 0 ? [{ ...booking.passengers[0], birthday: formatDate(booking.passengers[0].birthday) }] : initialFormState.passengers,
       initialPayments: booking.pendingInitialPayments && booking.pendingInitialPayments.length > 0 
-        ? booking.pendingInitialPayments.map(p => ({...p, paymentDate: formatDate(p.paymentDate)}))
+        ? booking.pendingInitialPayments.map(p => ({...p, paymentDate: formatDate(p.paymentDate), creditNoteId: p.paxCreditNoteId || null, _search: '', _wallet: null}))
         : initialFormState.initialPayments,
       instalments: booking.instalments ? booking.instalments.map(i => ({...i, dueDate: formatDate(i.dueDate)})) : []
     });
@@ -192,16 +171,25 @@ export default function BookingManager() {
 
     if (formData.returnDate && formData.instalments.length > 0) {
         const returnD = new Date(formData.returnDate).getTime();
-        // Find the highest timestamp among all instalments
         const lastInstD = Math.max(...formData.instalments.map(i => new Date(i.dueDate).getTime()));
-        
         if (lastInstD >= returnD) {
-          alert("DATE ERROR:\n\nThe last instalment due date MUST be strictly BEFORE the Return Date. Please adjust your payment plan.");
+          alert("DATE ERROR:\n\nThe last instalment due date MUST be strictly BEFORE the Return Date.");
           setLoading(false);
           return;
         }
-      }
-    
+    }
+
+    // Safety check for Wallets across ALL deposits
+    for (const ip of formData.initialPayments) {
+        if (ip.transactionMethod === 'PAX_CREDIT') {
+            const requestedAmt = parseFloat(ip.amount || 0);
+            if (!ip._wallet || requestedAmt > ip._wallet.remainingAmount) {
+                alert(`WALLET ERROR: Invalid wallet selected or insufficient funds for the £${requestedAmt} deposit.`);
+                setLoading(false);
+                return;
+            }
+        }
+    }
 
     const token = localStorage.getItem('token');
     const paxName = formData.paxName || `${formData.passengers?.[0]?.lastName}/${formData.passengers?.[0]?.firstName}`;
@@ -224,10 +212,8 @@ export default function BookingManager() {
   };
 
   return (
-    // MAIN BACKGROUND GRADIENT
     <div className="min-h-screen bg-[conic-gradient(at_top_right,_var(--tw-gradient-stops))] from-blue-50 via-slate-50 to-indigo-50 pb-32 font-sans text-slate-600">
       <Navbar />
-      
       <div className="max-w-7xl mx-auto px-4 py-12">
         
         {/* --- HEADER --- */}
@@ -273,40 +259,42 @@ export default function BookingManager() {
             <div className="section-header">
               <span className="text-xl">✈️</span> Flight & Booking Details
             </div>
-            <div className="p-8 grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="p-8 grid grid-cols-1 md:grid-cols-5 gap-6">
               <div className="col-span-1 md:col-span-1"><label className="label">Ref No</label><input name="refNo" value={formData.refNo} onChange={handleChange} className="input-modern" required placeholder="BKG-001"/></div>
               <div className="col-span-1 md:col-span-1"><label className="label">PNR</label><input name="pnr" value={formData.pnr} onChange={handleChange} className="input-modern font-mono uppercase tracking-widest text-blue-600 font-bold" required /></div>
               <div className="col-span-1 md:col-span-2"><label className="label">Airline</label><input name="airline" value={formData.airline} onChange={handleChange} className="input-modern" required /></div>
-              
               <div className="col-span-1 md:col-span-1"><label className="label">Route</label><input name="fromTo" value={formData.fromTo} onChange={handleChange} className="input-modern" placeholder="CMB-DXB" required /></div>
+              
               <div className="col-span-1 md:col-span-1">
                 <label className="label">Agent Name</label>
-                <select 
-                  name="agentName" 
-                  value={formData.agentName} 
-                  onChange={(e) => {
+                <select name="agentName" value={formData.agentName} onChange={(e) => {
                     const selectedAgent = consultants.find(c => `${c.firstName} ${c.lastName}` === e.target.value);
-                    setFormData({ 
-                      ...formData, 
-                      agentName: e.target.value,
-                      teamName: selectedAgent ? selectedAgent.team : formData.teamName // Auto-update team
-                    });
+                    setFormData({ ...formData, agentName: e.target.value, teamName: selectedAgent ? selectedAgent.team : formData.teamName });
                   }} 
-                  className="input-modern"
-                  required
+                  className="input-modern" required
                 >
                   <option value="" disabled>Select Consultant...</option>
-                  {consultants.map(c => (
-                     <option key={c.id} value={`${c.firstName} ${c.lastName}`}>
-                        {c.firstName} {c.lastName} ({c.team || 'No Team'})
-                     </option>
-                  ))}
+                  {consultants.map(c => ( <option key={c.id} value={`${c.firstName} ${c.lastName}`}>{c.firstName} {c.lastName} ({c.team || 'No Team'})</option> ))}
                 </select>
               </div>
+
               <div className="col-span-1 md:col-span-1"><label className="label">PC Date</label><input type="date" name="pcDate" value={formData.pcDate} onChange={handleChange} className="input-modern" required /></div>
               <div className="col-span-1 md:col-span-1"><label className="label">Travel Date</label><input type="date" name="travelDate" value={formData.travelDate} onChange={handleChange} className="input-modern" required /></div>
               <div className="col-span-1 md:col-span-1"><label className="label text-blue-500">Return Date</label><input type="date" name="returnDate" value={formData.returnDate} onChange={handleChange} className="input-modern" /></div>
               
+              {editModeId && (
+                <div className="col-span-1 md:col-span-5 border-t border-slate-100 pt-4 mt-2">
+                  <label className="label text-rose-500">Edit Booking Type (Warning: Only change if error)</label>
+                  <div className="flex gap-4">
+                    {['FRESH', 'DATE_CHANGE', 'CANCELLATION'].map(type => (
+                      <label key={type} className={`cursor-pointer border rounded-lg px-4 py-2 text-xs font-bold transition-all ${formData.bookingType === type ? 'bg-blue-50 border-blue-200 text-blue-700 ring-1 ring-blue-200' : 'bg-transparent border-slate-200 text-slate-400'}`}>
+                        <input type="radio" name="bookingType" value={type} checked={formData.bookingType === type} onChange={handleChange} className="hidden" />
+                        {type.replace('_', ' ')}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -314,12 +302,21 @@ export default function BookingManager() {
           <div className="glass-card animate-fade-in" style={{animationDelay: '0.1s'}}>
             <div className="section-header flex justify-between items-center">
               <div className="flex items-center gap-2"><span className="text-xl">👤</span> Lead Passenger</div>
-              <div className="flex items-center bg-white/50 rounded-lg px-2 py-1 border border-white/40">
-                <label className="text-[10px] font-bold text-slate-400 mr-2 uppercase">Total Pax</label>
-                <input type="number" name="numPax" value={formData.numPax} onChange={handleChange} className="w-10 bg-transparent text-center font-bold text-slate-700 outline-none" min="1" max="50" />
-              </div>
             </div>
             <div className="p-8 grid grid-cols-1 md:grid-cols-12 gap-6">
+              
+              <div className="md:col-span-12 mb-2 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-100 flex items-center justify-between shadow-sm">
+                <div>
+                  <h4 className="text-sm font-bold text-blue-900 uppercase tracking-wide">Total Passengers</h4>
+                  <p className="text-xs text-blue-400 font-medium">Include adults & children</p>
+                </div>
+                <div className="flex items-center gap-3 bg-white rounded-lg p-1 shadow-sm border border-blue-100">
+                  <button type="button" onClick={() => handleChange({ target: { name: 'numPax', value: Math.max(1, parseInt(formData.numPax || 1) - 1) } })} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors font-bold text-xl">-</button>
+                  <input type="number" name="numPax" value={formData.numPax} onChange={handleChange} className="w-12 text-center text-xl font-bold text-slate-700 outline-none bg-transparent" min="1" max="50" />
+                  <button type="button" onClick={() => handleChange({ target: { name: 'numPax', value: parseInt(formData.numPax || 1) + 1 } })} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors font-bold text-xl">+</button>
+                </div>
+              </div>
+
               <div className="md:col-span-2">
                 <label className="label">Title</label>
                 <select value={formData.passengers?.[0]?.title} onChange={(e) => handlePaxChange('title', e.target.value)} className="input-modern">
@@ -433,31 +430,111 @@ export default function BookingManager() {
             </div>
           </div>
 
-          {/* 5. DEPOSIT & INSTALMENTS */}
+          {/* 5. DEPOSITS & INSTALMENTS */}
           <div className="glass-card animate-fade-in" style={{animationDelay: '0.2s'}}>
              <div className="section-header">💰 Payment Schedule</div>
              <div className="p-8">
                 
-                {/* DEPOSIT ROW */}
+                {/* DEPOSIT ROWS */}
                 <div className="mb-6">
-                   <h4 className="text-xs font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-                     <span className="w-2 h-2 rounded-full bg-green-400"></span> Initial Deposit
-                   </h4>
-                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-50/50 p-4 rounded-xl border border-slate-200/50">
-                     <div>
-                       <label className="label">Amount</label>
-                       <input type="number" value={formData.initialPayments?.[0]?.amount} onChange={(e) => handlePaymentChange(0, 'amount', e.target.value)} className="input-modern font-mono font-bold text-green-700" placeholder="0.00" />
-                     </div>
-                     <div>
-                       <label className="label">Method</label>
-                       <select value={formData.initialPayments?.[0]?.transactionMethod} onChange={(e) => handlePaymentChange(0, 'transactionMethod', e.target.value)} className="input-modern">
-                        <option value="CASH">Cash</option><option value="BANK">Bank Transfer</option><option value="CARD">Card</option>
-                       </select>
-                     </div>
-                     <div>
-                       <label className="label">Date Received</label>
-                       <input type="date" value={formData.initialPayments?.[0]?.paymentDate} onChange={(e) => handlePaymentChange(0, 'paymentDate', e.target.value)} className="input-modern" />
-                     </div>
+                   <div className="flex justify-between items-center mb-3">
+                       <h4 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2">
+                         <span className="w-2 h-2 rounded-full bg-green-400"></span> Initial Deposits
+                       </h4>
+                       <Button 
+                         type="button" 
+                         onClick={() => {
+                           setFormData({
+                             ...formData, 
+                             initialPayments: [...formData.initialPayments, { amount: 0, transactionMethod: 'CASH', paymentDate: formatDate(new Date()), creditNoteId: null, _search: '', _wallet: null }]
+                           });
+                         }} 
+                         className="text-[10px] py-1 px-3 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm"
+                       >+ Add Deposit</Button>
+                   </div>
+                   
+                   <div className="space-y-4">
+                     {formData.initialPayments.map((ip, idx) => (
+                         <div key={idx} className="bg-slate-50/50 p-4 rounded-xl border border-slate-200/50 relative">
+                           {idx > 0 && <button type="button" onClick={() => {
+                               const newIPs = formData.initialPayments.filter((_, i) => i !== idx);
+                               setFormData({...formData, initialPayments: newIPs});
+                           }} className="absolute top-2 right-2 text-slate-400 hover:text-red-500 font-bold">×</button>}
+                           
+                           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                             <div>
+                               <label className="label">Method</label>
+                               <select value={ip.transactionMethod} onChange={(e) => handlePaymentChange(idx, 'transactionMethod', e.target.value)} className="input-modern">
+                                <option value="CASH">Cash</option><option value="BANK">Bank Transfer</option><option value="CARD">Card</option>
+                                <option value="PAX_CREDIT">Use Pax Credit Note</option>
+                               </select>
+                             </div>
+
+                             <div>
+                               <label className="label">Amount</label>
+                               <input 
+                                 type="number" 
+                                 value={ip.amount} 
+                                 onChange={(e) => handlePaymentChange(idx, 'amount', e.target.value)} 
+                                 className="input-modern font-mono font-bold text-green-700" 
+                                 max={ip._wallet ? ip._wallet.remainingAmount : undefined}
+                                 placeholder="0.00" 
+                               />
+                             </div>
+                             
+                             <div>
+                               <label className="label">Date Received</label>
+                               <input type="date" value={ip.paymentDate} onChange={(e) => handlePaymentChange(idx, 'paymentDate', e.target.value)} className="input-modern" />
+                             </div>
+                           </div>
+
+                           {/* SHOW WALLET SEARCH PER ROW IF SELECTED */}
+                           {ip.transactionMethod === 'PAX_CREDIT' && (
+                              <div className="mt-4 bg-blue-50 p-4 rounded-xl border border-blue-100 animate-fade-in">
+                                 <label className="text-[10px] font-bold text-blue-800 uppercase tracking-wider block mb-2">Search Cancelled Folder No.</label>
+                                 <div className="flex gap-2">
+                                    <input 
+                                       type="text" 
+                                       placeholder="e.g. 1.c" 
+                                       className="w-full border border-blue-200 p-2 rounded-lg text-sm font-mono uppercase focus:ring-2 focus:ring-blue-400 outline-none bg-white" 
+                                       value={ip._search || ''} 
+                                       onChange={e => {
+                                           const newIPs = [...formData.initialPayments];
+                                           newIPs[idx]._search = e.target.value;
+                                           setFormData({...formData, initialPayments: newIPs});
+                                       }} 
+                                    />
+                                    <button 
+                                       type="button" 
+                                       onClick={async () => {
+                                            try {
+                                              const token = localStorage.getItem('token');
+                                              const res = await axios.get(`http://localhost:5000/api/bookings/credits/pax/search?folder=${ip._search}`, { headers: { Authorization: `Bearer ${token}` } });
+                                              const newIPs = [...formData.initialPayments];
+                                              if (res.data.success) {
+                                                  newIPs[idx]._wallet = res.data.data;
+                                                  newIPs[idx].creditNoteId = res.data.data.id;
+                                              } else {
+                                                  newIPs[idx]._wallet = null;
+                                                  newIPs[idx].creditNoteId = null;
+                                                  alert(res.data.message);
+                                              }
+                                              setFormData({...formData, initialPayments: newIPs});
+                                            } catch(alert) { alert("Not found"); }
+                                       }} 
+                                       className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-blue-700 transition-colors"
+                                    >Search</button>
+                                 </div>
+                                 {ip._wallet && (
+                                    <div className="mt-3 bg-white p-3 rounded-lg border border-blue-100 flex justify-between items-center text-xs shadow-sm">
+                                      <span className="font-bold text-slate-600 uppercase tracking-wider text-[10px]">Available Credit:</span>
+                                      <span className="font-mono text-emerald-600 font-bold text-base">{formatMoney(ip._wallet.remainingAmount)}</span>
+                                    </div>
+                                 )}
+                              </div>
+                           )}
+                         </div>
+                     ))}
                    </div>
                 </div>
 
@@ -494,14 +571,9 @@ export default function BookingManager() {
 
           {/* STICKY FOOTER */}
           <div className="fixed bottom-0 left-0 right-0 z-50">
-            
-            {/* Gradient Line Top */}
             <div className="h-1 w-full bg-gradient-to-r from-transparent via-blue-400/50 to-transparent"></div>
-            
             <div className="bg-white/90 backdrop-blur-xl border-t border-white/60 shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.1)] px-6 py-4">
               <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
-                
-                {/* LEFT: Live Summary (Very helpful context) */}
                 <div className="hidden sm:flex items-center gap-6">
                    <div>
                       <span className="block text-[10px] uppercase font-bold text-slate-400 tracking-wider">Total Revenue</span>
@@ -514,41 +586,18 @@ export default function BookingManager() {
                    </div>
                 </div>
 
-                {/* RIGHT: Actions */}
                 <div className="flex gap-3 w-full sm:w-auto justify-end">
                   {editModeId && (
-                    <button 
-                      type="button"
-                      onClick={handleCancelEdit} 
-                      className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-                    >
+                    <button type="button" onClick={handleCancelEdit} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors">
                       Cancel
                     </button>
                   )}
-                  
-                  <button 
-                    type="submit" 
-                    disabled={loading}
-                    className="
-                      relative overflow-hidden
-                      group px-8 py-3 rounded-xl 
-                      bg-slate-900 text-white shadow-xl shadow-slate-900/20
-                      hover:scale-[1.02] active:scale-[0.98] transition-all duration-200
-                      flex items-center gap-2
-                    "
-                  >
-                    {/* Subtle Shine Effect */}
+                  <button type="submit" disabled={loading} className="relative overflow-hidden group px-8 py-3 rounded-xl bg-slate-900 text-white shadow-xl shadow-slate-900/20 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 flex items-center gap-2">
                     <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/10 to-transparent z-10"></div>
-                    
-                    <span className="font-bold text-sm relative z-20">
-                      {loading ? 'Processing...' : (editModeId ? 'Update Booking' : 'Create Booking')}
-                    </span>
-                    {!loading && (
-                      <svg className="w-4 h-4 relative z-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
-                    )}
+                    <span className="font-bold text-sm relative z-20">{loading ? 'Processing...' : (editModeId ? 'Update Booking' : 'Create Booking')}</span>
+                    {!loading && <svg className="w-4 h-4 relative z-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>}
                   </button>
                 </div>
-
               </div>
             </div>
           </div>
@@ -631,67 +680,18 @@ export default function BookingManager() {
       </div>
 
       <style>{`
-        .glass-card {
-            background: rgba(255, 255, 255, 0.7);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.5);
-            box-shadow: 0 4px 20px -5px rgba(0, 0, 0, 0.05);
-            border-radius: 1rem;
-            overflow: hidden;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        .section-header {
-            background: rgba(248, 250, 252, 0.6);
-            padding: 1rem 2rem;
-            border-bottom: 1px solid rgba(226, 232, 240, 0.6);
-            font-weight: 700;
-            color: #475569;
-            text-transform: uppercase;
-            font-size: 0.75rem;
-            letter-spacing: 0.05em;
-        }
-        .label {
-            display: block;
-            font-size: 0.65rem;
-            font-weight: 800;
-            color: #94a3b8;
-            margin-bottom: 0.4rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .input-modern {
-            width: 100%;
-            background: rgba(255, 255, 255, 0.6);
-            border: 1px solid #e2e8f0;
-            border-radius: 0.5rem;
-            padding: 0.6rem 0.8rem;
-            font-size: 0.875rem;
-            color: #334155;
-            transition: all 0.2s;
-            outline: none;
-        }
-        .input-modern:focus {
-            background: #ffffff;
-            border-color: #60a5fa;
-            box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.1);
-        }
-        .input-modern:read-only {
-            background: #f1f5f9;
-            color: #94a3b8;
-            cursor: not-allowed;
-        }
+        .glass-card { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.5); box-shadow: 0 4px 20px -5px rgba(0, 0, 0, 0.05); border-radius: 1rem; overflow: hidden; transition: transform 0.2s ease, box-shadow 0.2s ease; }
+        .section-header { background: rgba(248, 250, 252, 0.6); padding: 1rem 2rem; border-bottom: 1px solid rgba(226, 232, 240, 0.6); font-weight: 700; color: #475569; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+        .label { display: block; font-size: 0.65rem; font-weight: 800; color: #94a3b8; margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .input-modern { width: 100%; background: rgba(255, 255, 255, 0.6); border: 1px solid #e2e8f0; border-radius: 0.5rem; padding: 0.6rem 0.8rem; font-size: 0.875rem; color: #334155; transition: all 0.2s; outline: none; }
+        .input-modern:focus { background: #ffffff; border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.1); }
+        .input-modern:read-only { background: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
         .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; opacity: 0; transform: translateY(10px); }
         @keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
-        
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
-        @keyframes shimmer {
-          100% {
-            transform: translateX(100%);
-          }
-        }
+        @keyframes shimmer { 100% { transform: translateX(100%); } }
       `}</style>
     </div>
   );

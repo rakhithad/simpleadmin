@@ -64,7 +64,10 @@ exports.approveBooking = async (pendingId, approverUserId) => {
         airline: pending.airline, fromTo: pending.fromTo, bookingType: pending.bookingType,
         bookingStatus: 'CONFIRMED', // Set to Confirmed
         
-        pcDate: pending.pcDate, travelDate: pending.travelDate,
+        pcDate: pending.pcDate, 
+        travelDate: pending.travelDate,
+        returnDate: pending.returnDate, // <--- CARRY OVER RETURN DATE
+        
         paymentMethod: pending.paymentMethod,
         
         revenue: pending.revenue, prodCost: pending.prodCost, transFee: pending.transFee,
@@ -84,7 +87,10 @@ exports.approveBooking = async (pendingId, approverUserId) => {
         },
         initialPayments: {
           create: pending.pendingInitialPayments.map(p => ({
-            amount: p.amount, transactionMethod: p.transactionMethod, paymentDate: p.paymentDate
+            amount: p.amount, 
+            transactionMethod: p.transactionMethod, 
+            paymentDate: p.paymentDate,
+            paxCreditNoteId: p.paxCreditNoteId // <--- CARRY OVER WALLET ID
           }))
         },
         instalments: {
@@ -104,7 +110,7 @@ exports.approveBooking = async (pendingId, approverUserId) => {
       }
     });
 
-    // --- 4. COMMISSION LOGIC (THE MISSING PIECE) ---
+    // --- 4. COMMISSION LOGIC ---
     const estProfit = liveBooking.profit || 0;
     
     if (estProfit > 0) {
@@ -132,7 +138,33 @@ exports.approveBooking = async (pendingId, approverUserId) => {
 
 // --- MAIN: Reject Booking ---
 exports.rejectBooking = async (pendingId) => {
-  return await prisma.pendingBooking.delete({
-    where: { id: parseInt(pendingId) }
+  return await prisma.$transaction(async (tx) => {
+    // 1. Find the pending booking and its deposit records
+    const pending = await tx.pendingBooking.findUnique({
+      where: { id: parseInt(pendingId) },
+      include: { pendingInitialPayments: true }
+    });
+
+    if (!pending) throw new Error("Pending booking not found");
+
+    // 2. REFUND WALLETS: If a wallet was used for a deposit, give the money back
+    for (let p of pending.pendingInitialPayments) {
+        if (p.paxCreditNoteId) {
+            await tx.paxCreditNote.update({
+                where: { id: p.paxCreditNoteId },
+                data: { 
+                  remainingAmount: { increment: p.amount }, 
+                  status: 'OPEN' // Ensure it opens back up if it was exhausted
+                }
+            });
+        }
+    }
+
+    // 3. Hard delete the pending booking
+    await tx.pendingBooking.delete({
+      where: { id: parseInt(pendingId) }
+    });
+
+    return true;
   });
 };

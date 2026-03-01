@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import Navbar from '../components/Navbar';
 import PaymentTerminal from '../components/PaymentTerminal';
@@ -32,54 +32,78 @@ const CancellationDashboard = ({ booking, onUpdate }) => {
   });
   const [walletRef, setWalletRef] = useState(null);
   const [showBankRefund, setShowBankRefund] = useState(false);
+  const [showHistory, setShowHistory] = useState(false); 
   const [bankRefundAmount, setBankRefundAmount] = useState('');
 
-  // Fetch the wallet to see if there is money remaining when locked
-  useEffect(() => {
-    if (booking.isLocked) {
+  // 1. FIX: Use the imported useCallback directly
+  const fetchWallet = useCallback(async () => {
+     try {
        const token = localStorage.getItem('token');
-       axios.get(`http://localhost:5000/api/bookings/credits/pax/search?folder=${booking.folderNo}`, { headers: { Authorization: `Bearer ${token}` } })
-            .then(res => { if (res.data.success) setWalletRef(res.data.data); });
-    }
-  }, [booking.isLocked, booking.folderNo]);
+       const res = await axios.get(`http://localhost:5000/api/bookings/credits/pax/folder/${booking.folderNo}`, { 
+         headers: { Authorization: `Bearer ${token}` } 
+       });
+       if (res.data.success) {
+           setWalletRef(res.data.data);
+       }
+     } catch (err) { 
+         console.error(err); 
+     }
+  }, [booking.folderNo]);
 
-  const finalPaxWallet = Math.max(0, formData.supplierRefund - formData.consultantFee);
+  // 2. FIX: Wrap the call in an async wrapper to satisfy the strict linter
+  useEffect(() => {
+    if (booking.isLocked) { 
+        const loadWalletData = async () => {
+            await fetchWallet();
+        };
+        loadWalletData();
+    }
+  }, [booking.isLocked, fetchWallet]);
+
+  // Safely calculate final Pax Wallet
+  const depositTotal = booking.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
+  const transactionTotal = booking.transactions?.reduce((sum, t) => sum + t.amount, 0) || 0;
+  const totalPaxPaid = depositTotal + transactionTotal;
+  const productCost = booking.prodCost || 0;
+  const nonRefundableCost = Math.max(0, productCost - formData.supplierRefund);
+  const finalPaxWallet = Math.max(0, totalPaxPaid - nonRefundableCost - formData.consultantFee);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if(!window.confirm(`Finalize Cancellation?\n\nSupplier Refund: ${formatMoney(formData.supplierRefund)}\nPax Wallet: ${formatMoney(finalPaxWallet)}\nProfit: ${formatMoney(formData.consultantFee)}`)) return;
-    
     try {
       const token = localStorage.getItem('token');
       await axios.post(`http://localhost:5000/api/bookings/approved/${booking.id}/process-cancellation`, formData, { headers: { Authorization: `Bearer ${token}` } });
-      alert("Cancellation Finalized and Wallets Created!");
+      alert("Cancellation Finalized!");
       onUpdate();
-    } catch (alert) { alert("Failed to process cancellation"); }
+    } catch (alert) { alert("Failed to process"); }
   };
 
   const handleBankRefund = async (e) => {
     e.preventDefault();
-    if(!window.confirm(`Send ${formatMoney(bankRefundAmount)} to Passenger's Bank?`)) return;
+    if(!window.confirm(`Send ${formatMoney(bankRefundAmount)} to Bank?`)) return;
     try {
       const token = localStorage.getItem('token');
-      await axios.post(`http://localhost:5000/api/bookings/credits/pax/${walletRef.id}/refund`, 
-        { amount: bankRefundAmount }, 
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      
-      alert("Cash Refund Processed!");
+      await axios.post(`http://localhost:5000/api/bookings/credits/pax/${walletRef.id}/refund`, { amount: bankRefundAmount }, { headers: { Authorization: `Bearer ${token}` } });
+      alert("Refund Processed!");
       setShowBankRefund(false);
-      setBankRefundAmount(''); // Clear the input
-
-      // --- CRITICAL FIX: RE-FETCH WALLET BALANCE ---
-      const res = await axios.get(`http://localhost:5000/api/bookings/credits/pax/search?folder=${booking.folderNo}`, { 
-        headers: { Authorization: `Bearer ${token}` } 
-      });
-      if (res.data.success) setWalletRef(res.data.data); 
-
-      onUpdate(); // Refreshes the parent page financials
-    } catch (alert) { alert("Failed to refund."); }
+      setBankRefundAmount('');
+      
+      // Call the memoized function safely
+      await fetchWallet(); 
+      onUpdate(); 
+    } catch (alert) { alert("Failed"); }
   };
+
+  // Compile history timeline
+  const historyTimeline = [];
+  if (walletRef?.refunds) {
+    walletRef.refunds.forEach(r => historyTimeline.push({ id: `ref-${r.id}`, type: 'CASH OUT', amount: r.amount, date: r.createdAt, desc: 'Refunded back to client' }));
+  }
+  if (walletRef?.transactions) {
+    walletRef.transactions.forEach(t => historyTimeline.push({ id: `trx-${t.id}`, type: 'CREDIT USED', amount: t.amount, date: t.createdAt, desc: `Applied to Folder ${t.booking?.folderNo}` }));
+  }
+  historyTimeline.sort((a, b) => new Date(b.date) - new Date(a.date));
 
   if (booking.isLocked) {
     return (
@@ -98,18 +122,27 @@ const CancellationDashboard = ({ booking, onUpdate }) => {
              <span className="text-xl font-mono font-bold text-emerald-700">{formatMoney(booking.consultantFee)}</span>
            </div>
            
-           {/* LIVE PAX WALLET STATUS */}
+           {/* WALLET DISPLAY */}
            <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 relative group">
-             <span className="block text-blue-800 uppercase text-[10px] font-bold tracking-wider">Pax Wallet Balance</span>
+             <span className="block text-blue-800 uppercase text-[10px] font-bold tracking-wider flex justify-between items-center">
+                Pax Wallet Balance
+                {walletRef && (
+                  <button onClick={() => setShowHistory(true)} className="text-blue-600 hover:text-blue-800 text-[9px] uppercase tracking-wider bg-white px-1.5 py-0.5 rounded shadow-sm">View History</button>
+                )}
+             </span>
              {walletRef ? (
                 <>
-                  <span className="text-xl font-mono font-bold text-blue-700">{formatMoney(walletRef.remainingAmount)}</span>
-                  <button onClick={() => setShowBankRefund(true)} className="absolute bottom-4 right-4 text-[10px] bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition-colors shadow-sm opacity-0 group-hover:opacity-100 transition-opacity">
-                    💸 Refund to Bank
-                  </button>
+                  <span className={`text-xl font-mono font-bold ${walletRef.remainingAmount > 0 ? 'text-blue-700' : 'text-slate-400'}`}>
+                    {formatMoney(walletRef.remainingAmount)}
+                  </span>
+                  {walletRef.remainingAmount > 0 && (
+                    <button onClick={() => setShowBankRefund(true)} className="absolute bottom-4 right-4 text-[10px] bg-blue-600 text-white px-3 py-1.5 rounded-lg font-bold hover:bg-blue-700 transition-colors shadow-sm opacity-0 group-hover:opacity-100 transition-opacity">
+                      💸 Refund to Bank
+                    </button>
+                  )}
                 </>
               ) : (
-                <span className="text-sm font-bold text-slate-400 mt-1 block italic">Wallet Empty / Closed</span>
+                <span className="text-sm font-bold text-slate-400 mt-1 block italic">No Wallet Created</span>
               )}
            </div>
         </div>
@@ -131,24 +164,65 @@ const CancellationDashboard = ({ booking, onUpdate }) => {
              </form>
           </div>
         )}
+
+        {/* HISTORY MODAL */}
+        {showHistory && walletRef && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+             <div className="bg-white p-8 rounded-2xl w-full max-w-lg shadow-2xl animate-fade-in flex flex-col max-h-[80vh]">
+                <div className="flex justify-between items-center mb-6">
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-xl">Wallet Statement</h3>
+                    <p className="text-xs text-slate-400 font-mono mt-1">Pax: {walletRef.paxName}</p>
+                  </div>
+                  <button onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-slate-600 text-2xl">&times;</button>
+                </div>
+
+                <div className="flex justify-between items-center bg-blue-50 p-4 rounded-xl border border-blue-100 mb-6">
+                   <div>
+                      <span className="block text-[10px] text-blue-600 uppercase font-bold tracking-wider">Original Credit</span>
+                      <span className="font-mono text-lg font-bold text-blue-800">{formatMoney(walletRef.originalAmount)}</span>
+                   </div>
+                   <div className="text-right">
+                      <span className="block text-[10px] text-blue-600 uppercase font-bold tracking-wider">Current Balance</span>
+                      <span className={`font-mono text-2xl font-bold ${walletRef.remainingAmount > 0 ? 'text-blue-700' : 'text-slate-400'}`}>{formatMoney(walletRef.remainingAmount)}</span>
+                   </div>
+                </div>
+
+                <div className="overflow-y-auto flex-1 custom-scrollbar pr-2 space-y-3">
+                   {historyTimeline.length === 0 ? (
+                      <div className="text-center py-8 text-slate-400 italic">No deductions made yet.</div>
+                   ) : (
+                      historyTimeline.map((item) => (
+                        <div key={item.id} className="flex justify-between items-center border border-slate-100 bg-slate-50 p-4 rounded-xl shadow-sm">
+                           <div className="flex flex-col">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full w-fit mb-1 ${item.type === 'CASH OUT' ? 'bg-orange-100 text-orange-700' : 'bg-purple-100 text-purple-700'}`}>
+                                {item.type}
+                              </span>
+                              <span className="text-sm font-bold text-slate-700">{item.desc}</span>
+                              <span className="text-[10px] text-slate-400">{new Date(item.date).toLocaleString()}</span>
+                           </div>
+                           <span className="font-mono font-bold text-rose-600">-{formatMoney(item.amount)}</span>
+                        </div>
+                      ))
+                   )}
+                </div>
+             </div>
+          </div>
+        )}
       </div>
     );
   }
 
+  // --- Normal Form when UNLOCKED ---
   return (
     <div className="bg-rose-50/80 p-6 rounded-xl border border-rose-200 mt-4 animate-fade-in shadow-sm">
       <h3 className="text-rose-800 font-bold text-lg mb-1">Process Cancellation & Wallets</h3>
-      <p className="text-xs text-rose-600/70 mb-6 font-medium">Careful: Saving this will permanently lock the cancellation math.</p>
-      
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-           {/* SUPPLIER SIDE */}
-           <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm flex flex-col justify-between">
-             <div>
+      <form onSubmit={handleSubmit} className="space-y-6 mt-4">
+         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+           <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
                <h4 className="font-bold text-slate-700 mb-4 border-b pb-2 text-sm uppercase tracking-wide">1. Supplier Recovery</h4>
                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Refund Amount (£)</label>
-               <input type="number" step="0.01" className="w-full border border-slate-200 p-2 rounded-lg mb-4 font-mono text-right font-bold text-lg text-slate-700 bg-slate-50" value={formData.supplierRefund} onChange={e => setFormData({...formData, supplierRefund: parseFloat(e.target.value) || 0})} required/>
-               
+               <input type="number" step="0.01" className="w-full border border-slate-200 p-2 rounded-lg mb-4 font-mono text-right font-bold text-lg" value={formData.supplierRefund} onChange={e => setFormData({...formData, supplierRefund: parseFloat(e.target.value) || 0})} required/>
                <div className="grid grid-cols-2 gap-3 mb-2">
                  <div>
                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Supplier</label>
@@ -161,15 +235,11 @@ const CancellationDashboard = ({ booking, onUpdate }) => {
                    <input type="text" placeholder="e.g. REF-123" className="w-full border border-slate-200 p-2 rounded-lg text-sm" value={formData.supplierReference} onChange={e => setFormData({...formData, supplierReference: e.target.value})} />
                  </div>
                </div>
-             </div>
            </div>
-
-           {/* PAX SIDE */}
            <div className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
              <h4 className="font-bold text-slate-700 mb-4 border-b pb-2 text-sm uppercase tracking-wide">2. Pax Entitlement</h4>
              <label className="block text-[10px] font-bold text-emerald-600 uppercase mb-1">Consultant Fee (Profit)</label>
-             <input type="number" step="0.01" className="w-full border border-emerald-100 bg-emerald-50/50 p-2 rounded-lg mb-6 font-mono text-right text-emerald-700 font-bold text-lg" value={formData.consultantFee} onChange={e => setFormData({...formData, consultantFee: parseFloat(e.target.value) || 0})} required/>
-             
+             <input type="number" step="0.01" className="w-full border border-emerald-100 bg-emerald-50 p-2 rounded-lg mb-6 font-mono text-right text-emerald-700 font-bold text-lg" value={formData.consultantFee} onChange={e => setFormData({...formData, consultantFee: parseFloat(e.target.value) || 0})} required/>
              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-2 text-sm text-slate-600">
                 <div className="flex justify-between font-medium"><span>Supplier Refund:</span> <span className="font-mono">{formatMoney(formData.supplierRefund)}</span></div>
                 <div className="flex justify-between text-rose-500 border-b border-dashed border-slate-300 pb-2"><span>Less Fee:</span> <span className="font-mono">-{formatMoney(formData.consultantFee)}</span></div>
@@ -179,8 +249,7 @@ const CancellationDashboard = ({ booking, onUpdate }) => {
              </div>
            </div>
         </div>
-        
-        <button type="submit" className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 rounded-xl shadow-lg shadow-rose-200 transition-colors text-sm uppercase tracking-widest">
+        <button type="submit" className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 rounded-xl shadow-lg transition-colors text-sm uppercase tracking-widest">
           Lock Cancellation & Generate Credits
         </button>
       </form>
@@ -195,6 +264,8 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
     transFee: booking.transFee || 0,
     surcharge: booking.surcharge || 0,
     travelDate: booking.travelDate ? booking.travelDate.split('T')[0] : '', 
+    numPax: booking.numPax || 1, 
+    passengers: booking.passengers && booking.passengers.length > 0 ? [{ ...booking.passengers[0], birthday: booking.passengers[0].birthday ? booking.passengers[0].birthday.split('T')[0] : '' }] : [{ title: 'MR', firstName: '', lastName: '', gender: 'MALE', category: 'ADULT', email: '', contactNo: '' }],
     supplierCosts: [...(booking.supplierCosts || [])],
     instalments: booking.instalments ? booking.instalments.map(i => ({ ...i, dueDate: i.dueDate.split('T')[0] })) : [],
     initialPayments: booking.initialPayments ? booking.initialPayments.map(ip => ({ ...ip, paymentDate: ip.paymentDate.split('T')[0] })) : []
@@ -225,6 +296,12 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
     setFormData({ ...formData, initialPayments: newIPs });
   };
 
+  const handlePaxChange = (field, value) => {
+    const updatedPax = [...formData.passengers];
+    updatedPax[0][field] = value;
+    setFormData({ ...formData, passengers: updatedPax });
+  };
+
   const submitEdit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -246,20 +323,67 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] backdrop-blur-sm p-4">
-      <form onSubmit={submitEdit} className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden animate-fade-in flex flex-col max-h-[90vh]">
+      <form onSubmit={submitEdit} className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl overflow-hidden animate-fade-in flex flex-col max-h-[95vh]">
         
         <div className="bg-slate-900 text-white px-8 py-5 flex justify-between items-center">
           <div>
-            <h2 className="text-xl font-bold tracking-tight">Edit Ledger</h2>
-            <p className="text-xs text-slate-400 font-mono mt-1">Folder #{booking.folderNo} • {booking.paxName}</p>
+            <h2 className="text-xl font-bold tracking-tight">Edit Master Ledger</h2>
+            <p className="text-xs text-slate-400 font-mono mt-1">Folder #{booking.folderNo}</p>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-white font-bold text-2xl transition-colors">&times;</button>
         </div>
 
         <div className="p-8 overflow-y-auto flex-1 bg-slate-50 space-y-8 custom-scrollbar">
-          <div className="grid grid-cols-4 gap-6">
+          
+          {/* --- PASSENGER EDIT SECTION --- */}
+          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+             <div className="flex justify-between items-center border-b border-slate-100 pb-3 mb-5">
+                <h4 className="font-bold text-slate-800 text-sm uppercase tracking-wide">Lead Passenger Details</h4>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">Total Pax</label>
+                  <input type="number" className="w-16 border border-slate-200 rounded text-center text-sm font-bold p-1 outline-none focus:ring-2 focus:ring-blue-400" value={formData.numPax} onChange={e => setFormData({...formData, numPax: e.target.value})} min="1" />
+                </div>
+             </div>
+             <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+                <div className="col-span-1">
+                  <label className="label">Title</label>
+                  <select className="input-field py-2" value={formData.passengers[0]?.title} onChange={e => handlePaxChange('title', e.target.value)}>
+                    <option>MR</option><option>MRS</option><option>MS</option><option>MASTER</option>
+                  </select>
+                </div>
+                <div className="col-span-2">
+                  <label className="label">First Name</label>
+                  <input className="input-field py-2" value={formData.passengers[0]?.firstName} onChange={e => handlePaxChange('firstName', e.target.value)} required />
+                </div>
+                <div className="col-span-3">
+                  <label className="label">Last Name</label>
+                  <input className="input-field py-2" value={formData.passengers[0]?.lastName} onChange={e => handlePaxChange('lastName', e.target.value)} required />
+                </div>
+                
+                <div className="col-span-1">
+                  <label className="label">Category</label>
+                  <select className="input-field py-2" value={formData.passengers[0]?.category} onChange={e => handlePaxChange('category', e.target.value)}>
+                    <option>ADULT</option><option>CHILD</option><option>INFANT</option>
+                  </select>
+                </div>
+                <div className="col-span-2">
+                  <label className="label">Email</label>
+                  <input type="email" className="input-field py-2" value={formData.passengers[0]?.email} onChange={e => handlePaxChange('email', e.target.value)} />
+                </div>
+                <div className="col-span-2">
+                  <label className="label">Contact No</label>
+                  <input className="input-field py-2" value={formData.passengers[0]?.contactNo} onChange={e => handlePaxChange('contactNo', e.target.value)} />
+                </div>
+                <div className="col-span-1">
+                  <label className="label">DOB</label>
+                  <input type="date" className="input-field py-2" value={formData.passengers[0]?.birthday} onChange={e => handlePaxChange('birthday', e.target.value)} />
+                </div>
+             </div>
+          </div>
+
+          <div className="grid grid-cols-4 gap-6 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <div><label className="label">Travel Date</label><input type="date" className="input-field" value={formData.travelDate} onChange={e => setFormData({...formData, travelDate: e.target.value})} required/></div>
-            <div><label className="label">Revenue (£)</label><input type="number" step="0.01" className="input-field text-right font-mono font-bold" value={formData.revenue} onChange={e => setFormData({...formData, revenue: e.target.value})} required/></div>
+            <div><label className="label">Revenue (£)</label><input type="number" step="0.01" className="input-field text-right font-mono font-bold text-blue-700" value={formData.revenue} onChange={e => setFormData({...formData, revenue: e.target.value})} required/></div>
             <div><label className="label">Trans Fee (£)</label><input type="number" step="0.01" className="input-field text-right font-mono" value={formData.transFee} onChange={e => setFormData({...formData, transFee: e.target.value})} required/></div>
             <div><label className="label">Surcharge (£)</label><input type="number" step="0.01" className="input-field text-right font-mono" value={formData.surcharge} onChange={e => setFormData({...formData, surcharge: e.target.value})} required/></div>
           </div>
@@ -280,7 +404,7 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
                         <select className="input-field text-xs py-1.5" value={ip.transactionMethod} onChange={e => updateInitialPaymentRow(idx, 'transactionMethod', e.target.value)}>
                           <option value="BANK">BANK</option><option value="CASH">CASH</option><option value="CARD">CARD</option>
                         </select>
-                        <input type="number" step="0.01" placeholder="Amount" className="input-field text-xs py-1.5 text-right font-mono" value={ip.amount} onChange={e => updateInitialPaymentRow(idx, 'amount', e.target.value)} required />
+                        <input type="number" step="0.01" placeholder="Amount" className="input-field text-xs py-1.5 text-right font-mono font-bold text-emerald-700" value={ip.amount} onChange={e => updateInitialPaymentRow(idx, 'amount', e.target.value)} required />
                       </div>
                     ))}
                   </div>
@@ -297,7 +421,7 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
                     {formData.instalments.map((inst, idx) => (
                       <div key={idx} className="flex gap-2 items-center">
                         <input type="date" className="input-field text-xs py-1.5" value={inst.dueDate} onChange={e => updateInstalmentRow(idx, 'dueDate', e.target.value)} required />
-                        <input type="number" step="0.01" placeholder="Amount" className="input-field text-xs py-1.5 text-right font-mono" value={inst.amount} onChange={e => updateInstalmentRow(idx, 'amount', e.target.value)} required />
+                        <input type="number" step="0.01" placeholder="Amount" className="input-field text-xs py-1.5 text-right font-mono font-bold text-blue-700" value={inst.amount} onChange={e => updateInstalmentRow(idx, 'amount', e.target.value)} required />
                       </div>
                     ))}
                   </div>
@@ -319,20 +443,20 @@ const EditLedgerModal = ({ booking, onClose, onUpdate }) => {
                       <select className="input-field text-xs py-1.5" value={c.category} onChange={e => updateSupplierRow(idx, 'category', e.target.value)}>
                         <option value="FLIGHT">FLIGHT</option><option value="HOTEL">HOTEL</option><option value="CRUISE">CRUISE</option><option value="OTHER">OTHER</option>
                       </select>
-                      <input type="number" step="0.01" className="input-field text-xs py-1.5 text-right font-mono" value={c.amount} onChange={e => updateSupplierRow(idx, 'amount', e.target.value)} required />
+                      <input type="number" step="0.01" className="input-field text-xs py-1.5 text-right font-mono font-bold text-rose-700" value={c.amount} onChange={e => updateSupplierRow(idx, 'amount', e.target.value)} required />
                     </div>
                   ))}
                 </div>
               </div>
           </div>
 
-          <div className="bg-slate-800 text-white p-5 rounded-xl shadow-lg flex justify-between items-center">
+          <div className="bg-slate-800 text-white p-5 rounded-xl shadow-lg flex justify-between items-center sticky bottom-0">
             <div><span className="text-[10px] uppercase text-slate-400 block tracking-widest font-bold">Total Cost</span><span className="font-mono text-xl">{formatMoney(currentProdCost)}</span></div>
             <div className="text-right"><span className="text-[10px] uppercase text-slate-400 block tracking-widest font-bold">New Profit</span><span className="font-mono text-2xl font-bold text-emerald-400">{formatMoney(currentProfit)}</span></div>
           </div>
         </div>
 
-        <div className="border-t border-slate-100 p-5 flex gap-3 bg-white justify-end">
+        <div className="border-t border-slate-100 p-5 flex gap-3 bg-white justify-end rounded-b-2xl">
           <button type="button" onClick={onClose} className="px-6 py-2.5 rounded-xl font-bold bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 transition-colors">Cancel</button>
           <button type="submit" disabled={loading} className="px-8 py-2.5 rounded-xl font-bold bg-blue-600 hover:bg-blue-700 text-white transition-colors shadow-lg shadow-blue-200">{loading ? 'Saving...' : 'Save Changes'}</button>
         </div>
@@ -353,13 +477,8 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
   const [searchSuppFolder, setSearchSuppFolder] = useState('');
   const [foundSuppWallet, setFoundSuppWallet] = useState(null);
 
-  const initialTotal = currentViewBooking.initialPayments?.reduce((sum, p) => sum + p.amount, 0) || 0;
-  const instalmentPaid = currentViewBooking.instalments?.reduce((sum, i) => sum + (i.paidAmount || 0), 0) || 0;
-  const totalPaid = initialTotal + instalmentPaid;
-  
   const breakdownTotalCost = currentViewBooking.supplierCosts?.reduce((sum, c) => sum + c.amount, 0) || 0;
-  const breakdownTotalPaid = currentViewBooking.supplierCosts?.reduce((sum, c) => sum + (c.paidAmount || 0), 0) || 0;
-  const totalSupplierOwed = breakdownTotalCost - breakdownTotalPaid;
+  const totalSupplierOwed = breakdownTotalCost - (currentViewBooking.supplierCosts?.reduce((sum, c) => sum + (c.paidAmount || 0), 0) || 0);
 
   const searchSupplierWallet = async () => {
     try {
@@ -452,7 +571,7 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
       <div className="bg-white p-8 rounded-b-xl rounded-tr-xl border border-slate-200 shadow-sm relative animate-fade-in min-h-[400px]">
         
         {currentViewBooking.bookingType === 'CANCELLATION' ? (
-           <CancellationDashboard booking={currentViewBooking} familyVersions={versions} onUpdate={onUpdate} />
+           <CancellationDashboard booking={currentViewBooking} onUpdate={onUpdate} />
         ) : (
            <>
               {!currentViewBooking.isSettled && !currentViewBooking.isLocked && (
@@ -484,9 +603,17 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
                             <span className="text-slate-500">Route</span>
                             <span className="font-bold text-slate-700">{currentViewBooking.fromTo}</span>
                         </div>
-                        <div className="pt-2 border-t border-slate-200 mt-2">
-                            <span className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Travel Date</span>
-                            <span className="text-lg font-bold text-slate-800">{formatDate(currentViewBooking.travelDate)}</span>
+                        <div className="pt-2 border-t border-slate-200 mt-2 flex justify-between">
+                            <div>
+                               <span className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Travel Date</span>
+                               <span className="text-lg font-bold text-slate-800">{formatDate(currentViewBooking.travelDate)}</span>
+                            </div>
+                            {currentViewBooking.returnDate && (
+                              <div className="text-right">
+                                 <span className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Return Date</span>
+                                 <span className="text-lg font-bold text-slate-800">{formatDate(currentViewBooking.returnDate)}</span>
+                              </div>
+                            )}
                         </div>
                     </div>
                   </div>
@@ -495,16 +622,22 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
                     <h4 className="font-bold text-slate-400 text-[10px] uppercase tracking-widest mb-3">Passengers ({currentViewBooking.numPax})</h4>
                     <div className="space-y-2">
                       {currentViewBooking.passengers.map((p, i) => (
-                        <div key={i} className="flex justify-between items-center text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-100 shadow-sm text-sm">
-                          <span className="font-medium">{p.title} {p.firstName} {p.lastName}</span>
-                          <span className="text-[10px] text-slate-400 bg-slate-50 border border-slate-100 px-1.5 rounded">{p.category}</span>
+                        <div key={i} className="flex flex-col bg-white px-4 py-3 rounded-xl border border-slate-100 shadow-sm text-sm">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-bold text-slate-700">{p.title} {p.firstName} {p.lastName}</span>
+                            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{p.category}</span>
+                          </div>
+                          <div className="flex justify-between text-[10px] text-slate-400 mt-1 font-mono">
+                             <span>{p.email || 'No Email'}</span>
+                             <span>{p.contactNo || 'No Number'}</span>
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 </div>
 
-                {/* COLUMN 2: ACCOUNTS PAYABLE */}
+                {/* COLUMN 2: DETAILED SUPPLIER LEDGER */}
                 <div className="col-span-1 lg:col-span-1">
                   <div className="flex justify-between items-end mb-3">
                     <h4 className="font-bold text-slate-400 text-[10px] uppercase tracking-widest">Supplier Ledger</h4>
@@ -516,74 +649,76 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
                       <p className="text-xs text-slate-400 italic">No suppliers linked.</p>
                     </div>
                   ) : (
-                    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
-                      <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-2 border-b border-slate-200 text-[9px] font-bold text-slate-400 uppercase text-right">
-                        <span className="col-span-4 text-left">Supplier</span><span className="col-span-3">Cost</span><span className="col-span-3">Paid</span><span className="col-span-2">Action</span>
-                      </div>
-                      <div className="divide-y divide-slate-100">
+                    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm space-y-0 divide-y divide-slate-100">
                       {currentViewBooking.supplierCosts.map((c, i) => {
                           const owed = c.amount - (c.paidAmount || 0);
                           return (
-                           <div key={i} className="grid grid-cols-12 gap-2 px-4 py-3 text-slate-600 items-center text-right text-xs">
-                             <div className="col-span-4 text-left">
-                               <div className="font-bold text-blue-900">{c.supplier}</div>
-                               <div className="text-[10px] text-slate-400">{c.category}</div>
+                           <div key={i} className="p-4 bg-slate-50/50">
+                             {/* Top Row: Core Cost */}
+                             <div className="flex justify-between items-start mb-2">
+                               <div>
+                                 <div className="font-bold text-blue-900 text-sm">{c.supplier}</div>
+                                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{c.category}</div>
+                               </div>
+                               <div className="text-right">
+                                 <div className="font-mono font-bold text-slate-700">{formatMoney(c.amount)}</div>
+                                 {owed > 0 ? (
+                                    <div className="text-[10px] text-rose-500 font-bold">Owes {formatMoney(owed)}</div>
+                                 ) : (
+                                    <div className="text-[10px] text-emerald-500 font-bold">Paid in Full</div>
+                                 )}
+                               </div>
                              </div>
-                             <div className="col-span-3 font-mono">{formatMoney(c.amount)}</div>
-                             <div className="col-span-3 font-mono text-blue-600">{formatMoney(c.paidAmount)}</div>
-                             <div className="col-span-2 flex justify-end">
-                                {owed > 0 && !currentViewBooking.isSettled && !currentViewBooking.isLocked ? (
-                                   <button onClick={() => { setSuppPayData({...suppPayData, supplierCostId: c.id, supplierName: c.supplier, amount: owed}); setShowSuppModal(true); }} className="text-[10px] bg-slate-900 hover:bg-black text-white px-2 py-1 rounded transition-colors shadow-sm">PAY</button>
-                                ) : (
-                                   <span className="text-[10px] text-emerald-500 font-bold">✔</span>
-                                )}
-                             </div>
+
+                             {/* Bottom Section: Payment History */}
+                             {c.payments && c.payments.length > 0 && (
+                               <div className="mt-3 space-y-1.5 border-l-2 border-slate-200 pl-3">
+                                  {c.payments.map((pay, pIdx) => (
+                                     <div key={pIdx} className="flex justify-between text-[10px] text-slate-500 font-mono items-center">
+                                        <span className="flex items-center gap-1.5">
+                                           <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                                           {pay.date.split('T')[0]} ({pay.method})
+                                        </span>
+                                        <span className="font-bold">{formatMoney(pay.amount)}</span>
+                                     </div>
+                                  ))}
+                               </div>
+                             )}
+
+                             {/* Pay Button */}
+                             {owed > 0 && !currentViewBooking.isSettled && !currentViewBooking.isLocked && (
+                               <div className="mt-3 flex justify-end">
+                                 <button onClick={() => { setSuppPayData({...suppPayData, supplierCostId: c.id, supplierName: c.supplier, amount: owed}); setShowSuppModal(true); }} className="text-[10px] font-bold bg-slate-900 hover:bg-black text-white px-3 py-1.5 rounded-lg transition-colors shadow-sm uppercase tracking-wider">Pay {c.supplier}</button>
+                               </div>
+                             )}
                            </div>
                           );
                       })}
-                      </div>
                     </div>
                   )}
                 </div>
 
-                {/* COLUMN 3: PROFIT SUMMARY */}
+                {/* COLUMN 3: PROFIT SUMMARY (Simplified) */}
                 <div>
                   <h4 className="font-bold text-slate-400 text-[10px] uppercase tracking-widest mb-3">Profit Snapshot</h4>
                   <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
                     <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Revenue</span>
+                        <span className="text-slate-500 font-medium">Expected Revenue</span>
                         <span className="text-slate-800 font-bold font-mono">{formatMoney(currentViewBooking.revenue)}</span>
                     </div>
                     <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Total Costs</span>
+                        <span className="text-slate-500 font-medium">Expected Costs</span>
                         <span className="text-rose-500 font-bold font-mono">-{formatMoney(breakdownTotalCost)}</span>
                     </div>
                     <div className="border-t border-slate-100 pt-3 flex justify-between items-center">
-                        <span className="text-xs uppercase font-bold text-emerald-700 tracking-wider">Net Profit</span>
+                        <span className="text-xs uppercase font-bold text-emerald-700 tracking-wider">Target Profit</span>
                         <span className="text-xl font-bold text-emerald-600 font-mono">{formatMoney(currentViewBooking.revenue - breakdownTotalCost)}</span>
                     </div>
-                  </div>
-                  
-                  <div className="mt-4 bg-slate-900 text-white p-4 rounded-xl shadow-lg">
-                     <div className="flex justify-between items-center mb-1">
-                        <span className="text-[10px] uppercase font-bold text-slate-400">Cash Position</span>
-                        <span className={`font-mono font-bold ${totalPaid - breakdownTotalPaid >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{formatMoney(totalPaid - breakdownTotalPaid)}</span>
-                     </div>
-                     <div className="h-1 w-full bg-slate-800 rounded-full overflow-hidden">
-                        <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(100, (totalPaid / (currentViewBooking.revenue || 1)) * 100)}%` }}></div>
-                     </div>
-                     <div className="flex justify-between mt-1 text-[9px] text-slate-500">
-                        <span>Paid In: {formatMoney(totalPaid)}</span>
-                        <span>Paid Out: {formatMoney(breakdownTotalPaid)}</span>
-                     </div>
                   </div>
                 </div>
                 
                 {/* PAYMENT TERMINAL (Full Width) */}
-                <div className="col-span-1 lg:col-span-3 mt-4 border-t border-slate-100 pt-8">
-                    <h4 className="font-bold text-slate-800 text-sm mb-4 flex items-center gap-2">
-                        <span className="bg-blue-100 text-blue-700 p-1 rounded">💳</span> Client Payment Terminal
-                    </h4>
+                <div className="col-span-1 lg:col-span-3 mt-4">
                     <PaymentTerminal booking={currentViewBooking} onUpdate={onUpdate} />
                 </div>
               </div>
@@ -614,7 +749,7 @@ const ExpandedDetails = ({ booking: parentBooking, onUpdate }) => {
                       <div className="bg-rose-50 p-3 rounded-lg border border-rose-100">
                          <label className="text-[10px] font-bold text-rose-800 uppercase block mb-2">Search Cancelled Folder No.</label>
                          <div className="flex gap-2">
-                            <input type="text" placeholder="e.g. FN-0001.c" className="w-full border border-rose-200 rounded-lg text-sm px-2" value={searchSuppFolder} onChange={e => setSearchSuppFolder(e.target.value)} />
+                            <input type="text" placeholder="e.g. FN-0001.c" className="w-full border border-rose-200 rounded-lg text-sm px-2 font-mono uppercase" value={searchSuppFolder} onChange={e => setSearchSuppFolder(e.target.value)} />
                             <button type="button" onClick={searchSupplierWallet} className="bg-rose-600 text-white px-3 py-1 rounded-lg text-xs font-bold hover:bg-rose-700">Search</button>
                          </div>
                          {foundSuppWallet && (
@@ -680,7 +815,7 @@ export default function ApprovedBookings() {
              <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">Approved Ledgers</h1>
              <p className="text-slate-400 text-sm mt-1 font-medium">Manage live bookings, payments, and cancellations.</p>
           </div>
-          <div className="relative group">
+          <div className="relative group w-full md:w-auto">
              <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-300 to-indigo-300 rounded-xl blur opacity-30 group-hover:opacity-60 transition duration-200"></div>
              <input 
                type="text" 

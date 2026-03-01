@@ -512,77 +512,113 @@ exports.cancelBooking = async (req, res) => {
 
 exports.processCancellation = async (req, res) => {
   const { id } = req.params; 
-  // We rely on supplierRefund for the math, 
-  // but we IGNORE 'consultantFee' input because we CALCULATE it now.
-  const { supplierRefund, supplierName, supplierReference } = req.body;
+  // WE NOW USE the consultantFee sent from the frontend!
+  const { supplierRefund, consultantFee, supplierName, supplierReference } = req.body;
 
   try {
     await prisma.$transaction(async (tx) => {
-      // 1. Fetch Booking + Parent + Financials
+      // 1. Fetch Booking and all money records
       const booking = await tx.booking.findUnique({ 
           where: { id: parseInt(id) },
           include: { 
-            parent: true,
-            initialPayments: true,
-            instalments: true,
-            supplierCosts: true
+            parent: true, 
+            initialPayments: true, 
+            transactions: true, 
+            supplierCosts: true 
           }
       });
 
-      // 2. Calculate REAL PROFIT using the Golden Formula
       const refundAmount = parseFloat(supplierRefund || 0);
-      const realProfit = calculateRealProfit(booking, refundAmount);
+      const requestedFee = parseFloat(consultantFee || 0);
 
-      console.log(`[CANCEL MATH] Pax Paid - (Cost - Refund) = Real Profit`);
-      console.log(`[CANCEL MATH] Result: ${realProfit}`);
+      // 2. PROPER CASH POOL CALCULATION
+      // How much money did the passenger actually pay us?
+      const totalInitial = booking.initialPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+      const totalTrans = booking.transactions.reduce((sum, t) => sum + (t.amount || 0), 0);
+      const totalPaxPaid = totalInitial + totalTrans;
 
-      // 3. Find TOTAL Commission already paid to this family (Original + Date Changes)
+      // How much money is permanently lost to the supplier? (Cost - Refund)
+      const totalCost = booking.supplierCosts.reduce((sum, c) => sum + (c.amount || 0), 0);
+      const nonRefundableCost = totalCost - refundAmount;
+
+      // Remaining Cash in our hands
+      const cashPool = totalPaxPaid - nonRefundableCost;
+
+      let paxWalletAmount = 0;
+      let realProfit = requestedFee;
+
+      if (cashPool > 0) {
+          // We have leftover cash. Deduct our fee, give the rest to Pax.
+          paxWalletAmount = cashPool - requestedFee;
+          
+          if (paxWalletAmount < 0) {
+              // Safety: If you asked for a fee bigger than the cash pool, cap it.
+              realProfit = cashPool;
+              paxWalletAmount = 0;
+          }
+      } else {
+          // We lost money on this booking. No wallet for pax.
+          realProfit = cashPool; // Records the loss
+          paxWalletAmount = 0;
+      }
+
+      console.log(`[CANCEL] Cash Pool: £${cashPool} | Fee Taken: £${realProfit} | Pax Wallet: £${paxWalletAmount}`);
+
+      // 3. CREATE PAX WALLET
+      if (paxWalletAmount > 0) {
+        await tx.paxCreditNote.create({
+          data: {
+            bookingId: booking.id,
+            paxName: booking.paxName,
+            originalAmount: paxWalletAmount,
+            remainingAmount: paxWalletAmount,
+            status: 'OPEN'
+          }
+        });
+      }
+
+      // 4. CREATE SUPPLIER CREDIT NOTE
+      if (refundAmount > 0) {
+        await tx.supplierCreditNote.create({
+          data: {
+            bookingId: booking.id,
+            supplier: supplierName || 'OTHER',
+            reference: supplierReference || '',
+            originalAmount: refundAmount,
+            remainingAmount: refundAmount,
+            status: 'OPEN'
+          }
+        });
+      }
+
+      // 5. UPDATE LEDGER
+      await tx.booking.update({
+        where: { id: booking.id },
+        data: {
+          supplierRefund: refundAmount,
+          consultantFee: realProfit, 
+          profit: realProfit,        
+          isLocked: true 
+        }
+      });
+
+      // 6. COMMISSION LOGIC (Clawback or Payment)
       const familyIds = [booking.id];
       if (booking.parentId) familyIds.push(booking.parentId);
 
       const previousEntries = await tx.commissionLedger.findMany({ 
         where: { bookingId: { in: familyIds } } 
       });
-
       const alreadyPaid = previousEntries.reduce((sum, entry) => sum + entry.amount, 0);
-
-      // 4. THE ADJUSTMENT (Scenario 1.1 Logic)
-      // Example 1.1: RealProfit (-100) - AlreadyPaid (100) = -200 Adjustment
+      
       const finalAdjustment = realProfit - alreadyPaid;
 
-      console.log(`[CANCEL COMM] Real Profit (${realProfit}) - Paid (${alreadyPaid}) = Adjust (${finalAdjustment})`);
-
-      // 5. Update the Booking Ledger
-      await tx.booking.update({
-        where: { id: booking.id },
-        data: {
-          supplierRefund: refundAmount,
-          consultantFee: realProfit, // Store the Real Profit here for record
-          profit: realProfit,        // Update the main profit field too
-          isLocked: true 
-        }
-      });
-
-      // 6. Record the Commission Entry (If difference exists)
       if (Math.abs(finalAdjustment) > 0.01) {
         await recordCommission(tx, booking, 'CANCELLATION_ADJUSTMENT', finalAdjustment, realProfit);
       }
-
-      // 7. (Optional) Create Supplier Credit Note if refund > 0
-      if (refundAmount > 0) {
-        await tx.supplierCreditNote.create({
-          data: {
-            bookingId: booking.id,
-            supplier: supplierName || 'OTHER',
-            reference: supplierReference,
-            originalAmount: refundAmount,
-            remainingAmount: refundAmount
-          }
-        });
-      }
     });
 
-    res.status(200).json({ success: true, message: "Cancellation Processed & Commission Balanced" });
+    res.status(200).json({ success: true, message: "Cancellation Processed & Wallets Created!" });
   } catch (error) { 
     console.error("Cancel Error:", error);
     res.status(500).json({ success: false, message: "Processing failed" }); 
@@ -698,4 +734,60 @@ exports.toggleCommissionPaid = async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ success: false }); }
+};
+
+exports.getPaxWalletByFolder = async (req, res) => {
+  const { folder } = req.params;
+  try {
+    const credit = await prisma.paxCreditNote.findFirst({
+      where: { booking: { folderNo: folder } },
+      include: {
+        // Fetch Cash Outs
+        refunds: { orderBy: { createdAt: 'desc' } },
+        // Fetch usages on other bookings
+        transactions: { 
+          orderBy: { createdAt: 'desc' },
+          include: { booking: { select: { folderNo: true } } } 
+        }
+      }
+    });
+    res.json({ success: true, data: credit });
+  } catch(err) { 
+    res.status(500).json({ success: false }); 
+  }
+};
+
+// 2. REPLACE your existing refundPaxCreditToBank WITH THIS:
+exports.refundPaxCreditToBank = async (req, res) => {
+  const { id } = req.params;
+  const { amount } = req.body;
+  
+  try {
+    await prisma.$transaction(async (tx) => {
+      const note = await tx.paxCreditNote.findUnique({ where: { id: parseInt(id) } });
+      const refundAmt = parseFloat(amount);
+      
+      if (note.remainingAmount < refundAmt) throw new Error('Insufficient Funds');
+      
+      const newBalance = note.remainingAmount - refundAmt;
+      
+      // Update Wallet
+      await tx.paxCreditNote.update({
+         where: { id: parseInt(id) },
+         data: { 
+           remainingAmount: newBalance,
+           status: newBalance <= 0 ? 'EXHAUSTED' : 'OPEN'
+         }
+      });
+      
+      // --- NEW: Log the Cash Out ---
+      await tx.paxWalletRefund.create({
+        data: { paxCreditNoteId: note.id, amount: refundAmt }
+      });
+    });
+
+    res.json({ success: true, message: "Refund Processed & Logged" });
+  } catch(err) { 
+    res.status(500).json({ success: false, message: err.message }); 
+  }
 };

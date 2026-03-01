@@ -111,6 +111,7 @@ enum PendingStatus {
   APPROVED
   REJECTED
 }
+
 model PendingInitialPayment {
   id                Int      @id @default(autoincrement())
   amount            Float
@@ -119,6 +120,9 @@ model PendingInitialPayment {
 
   pendingBookingId  Int?     @map("pending_booking_id")
   pendingBooking    PendingBooking? @relation(fields: [pendingBookingId], references: [id], onDelete: Cascade)
+
+  paxCreditNoteId   Int?            @map("pax_credit_note_id")
+  paxCreditNote     PaxCreditNote?  @relation("PendingDepositToWallet", fields: [paxCreditNoteId], references: [id])
 
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
@@ -272,6 +276,9 @@ model InitialPayment {
   bookingId         Int      @map("booking_id")
   booking           Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
+  paxCreditNoteId   Int?            @map("pax_credit_note_id")
+  paxCreditNote     PaxCreditNote?  @relation("DepositToWallet", fields: [paxCreditNoteId], references: [id])
+
   createdAt         DateTime @default(now()) @map("created_at")
   @@map("initial_payments")
 }
@@ -391,12 +398,25 @@ model PaxCreditNote {
   
   originalAmount   Float    @map("original_amount")
   remainingAmount  Float    @map("remaining_amount")
-  status           String   @default("OPEN") // OPEN, EXHAUSTED, REFUNDED_CASH
+  status           String   @default("OPEN")
   
   createdAt        DateTime @default(now()) @map("created_at")
   transactions     Transaction[] 
+  refunds          PaxWalletRefund[]
+  pendingInitialPayments PendingInitialPayment[] @relation("PendingDepositToWallet")
+  initialPayments        InitialPayment[]        @relation("DepositToWallet")
 
   @@map("pax_credit_notes")
+}
+
+model PaxWalletRefund {
+  id              Int           @id @default(autoincrement())
+  paxCreditNoteId Int           @map("pax_credit_note_id")
+  paxCreditNote   PaxCreditNote @relation(fields: [paxCreditNoteId], references: [id], onDelete: Cascade)
+  amount          Float
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  @@map("pax_wallet_refunds")
 }
 
 model SupplierCreditNote {

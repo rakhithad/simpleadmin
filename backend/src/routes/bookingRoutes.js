@@ -33,5 +33,6 @@ router.post('/credits/pax/:id/refund', authMiddleware, bookingController.refundP
 router.get('/commissions', authMiddleware, bookingController.getMonthlyCommissions);
 router.put('/commissions/:id/toggle', authMiddleware, bookingController.toggleCommissionPaid);
 
+router.get('/credits/pax/folder/:folder', bookingController.getPaxWalletByFolder);
 
 module.exports = router;
